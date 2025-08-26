@@ -200,6 +200,58 @@ def get_agent(model, tokenizer, device, hyperparams):
         ), f"Environment {hyperparams['env']} is not supported. Please provide a valid environment."
     return agent
 
+def rollout(agent, env, hyperparams):
+    d3rlpy.seed(hyperparams["seed"])
+    d3rlpy.envs.seed_env(env, hyperparams["seed"])
+    np.random.seed(hyperparams["seed"])
+
+    observations, actions, rewards, terminals = [], [], [], []
+    counter = 0
+    for episode in trange(hyperparams["n_episodes"]):
+        observation, info = env.reset()
+        done = False
+        n_step = 0
+        while not done:
+            rand = bool(np.random.binomial(n=1, p=hyperparams["eps"]))
+            if rand:
+                action = env.action_space.sample()
+            else:
+                action = agent.act(observation)
+            # wandb.log({"action": action})
+            observation, reward, done, info = env.step(action)
+            if "Cliff" in hyperparams["env"] or "Frozen" in hyperparams["env"]:
+                agent.add_env_hist(observation, reward, action)
+            agent.assign_reward(reward)
+            observations.append(observation)
+            actions.append(action)
+            rewards.append(reward)
+            n_step += 1
+            if n_step >= hyperparams["max_episode_len"]:
+                done = True
+            terminals.append(int(done))
+            print(n_step, observation, action, reward)
+        # episode_stats = {
+        #     "episode": episode,
+        #     "sum_return": sum(agent.current_episode_rewards),
+        #     "message_ct": len(agent.current_episode_messages),
+        #     "episode_messages": agent.current_episode_messages,
+        # }
+        train_stats = agent.terminate_episode(train=hyperparams["SFT"])
+        # episode_stats.update(train_stats)
+        # wandb.log(episode_stats)
+        if counter > 0 and counter % int(hyperparams["n_episodes"] % 100) == 0:
+            print(
+                f"Episode {counter}, sum return: {sum(agent.current_episode_rewards)}"
+            )
+        counter += 1
+
+    dataset = d3rlpy.dataset.MDPDataset(
+        observations=np.array(observations),
+        actions=np.array(actions),
+        rewards=np.array(rewards),
+        terminals=np.array(terminals),
+    )
+    return dataset
 
 if __name__ == "__main__":
     hyperparams = {
@@ -261,56 +313,7 @@ if __name__ == "__main__":
     else:
         env = GymCompatWrapper(gym.make(hyperparams["env"]))
 
-    d3rlpy.seed(hyperparams["seed"])
-    d3rlpy.envs.seed_env(env, hyperparams["seed"])
-    np.random.seed(hyperparams["seed"])
-
-    observations, actions, rewards, terminals = [], [], [], []
-    counter = 0
-    for episode in trange(hyperparams["n_episodes"]):
-        observation, info = env.reset()
-        done = False
-        n_step = 0
-        while not done:
-            rand = bool(np.random.binomial(n=1, p=hyperparams["eps"]))
-            if rand:
-                action = env.action_space.sample()
-            else:
-                action = agent.act(observation)
-            # wandb.log({"action": action})
-            observation, reward, done, info = env.step(action)
-            if "Cliff" in hyperparams["env"] or "Frozen" in hyperparams["env"]:
-                agent.add_env_hist(observation, reward, action)
-            agent.assign_reward(reward)
-            observations.append(observation)
-            actions.append(action)
-            rewards.append(reward)
-            n_step += 1
-            if n_step >= hyperparams["max_episode_len"]:
-                done = True
-            terminals.append(int(done))
-            print(n_step, observation, action, reward)
-        # episode_stats = {
-        #     "episode": episode,
-        #     "sum_return": sum(agent.current_episode_rewards),
-        #     "message_ct": len(agent.current_episode_messages),
-        #     "episode_messages": agent.current_episode_messages,
-        # }
-        train_stats = agent.terminate_episode(train=hyperparams["SFT"])
-        # episode_stats.update(train_stats)
-        # wandb.log(episode_stats)
-        if counter > 0 and counter % int(hyperparams["n_episodes"] % 100) == 0:
-            print(
-                f"Episode {counter}, sum return: {sum(agent.current_episode_rewards)}"
-            )
-        counter += 1
-
-    dataset = d3rlpy.dataset.MDPDataset(
-        observations=np.array(observations),
-        actions=np.array(actions),
-        rewards=np.array(rewards),
-        terminals=np.array(terminals),
-    )
+    dataset = rollout(agent, env, hyperparams)
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     if hyperparams["SFT"]:
         is_SFT = "SFT"

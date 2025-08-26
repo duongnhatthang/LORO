@@ -17,3 +17,4 @@ d3rlpy_logs/*/time_step.csv
 data/*.zip
 data/old/
 full_results/
+figs_backup/
