@@ -43,7 +43,7 @@ def online_training_split(env, eval_env, hyperparams, explorer=None):
             experiment_name=f"{timestamp}_online_training",
         )
         if hyperparams["env"] == "CliffWalking-v0":
-            r = evaluate_qlearning_with_environment(
+            r, _ = evaluate_qlearning_with_environment(
                 dqn, eval_env, hyperparams["max_episode_len"]
             )
         else:
@@ -56,6 +56,36 @@ def online_training_split(env, eval_env, hyperparams, explorer=None):
         n_steps=hyperparams["n_pretrain_steps"],
         n_steps_per_epoch=hyperparams["n_steps_per_epoch"],
     )
+    # Convert the ReplayBuffer to an MDPDataset by extracting data manually
+    # Since ReplayBuffer doesn't have to_mdp_dataset(), we need to create it manually
+    observations, actions, rewards, terminals = [], [], [], []
+    
+    # Extract data from the buffer's episodes
+    if hasattr(buffer, 'episodes') and len(buffer.episodes) > 0 and buffer.transition_count > 0:
+        for episode in buffer.episodes:
+            if len(episode) > 0 and hasattr(episode, "rewards"):
+                observations.extend(episode.observations)
+                actions.extend(episode.actions)
+                rewards.extend(episode.rewards)
+                # Add terminal flags: 0 for all steps except the last one
+                terminals.extend([0] * (len(episode.rewards) - 1) + [1])
+    
+    # Create MDPDataset only if we have data
+    if len(observations) > 0:
+        offline_dataset = d3rlpy.dataset.MDPDataset(
+            observations=np.array(observations),
+            actions=np.array(actions),
+            rewards=np.array(rewards),
+            terminals=np.array(terminals),
+        )
+    else:
+        # Create empty dataset if no data is available
+        offline_dataset = d3rlpy.dataset.MDPDataset(
+            observations=np.array([]),
+            actions=np.array([]),
+            rewards=np.array([]),
+            terminals=np.array([]),
+        )
 
     for _ in trange(hyperparams["n_online_eps"]):
         dqn.fit_online(
@@ -66,14 +96,19 @@ def online_training_split(env, eval_env, hyperparams, explorer=None):
             experiment_name=f"{timestamp}_online_training",
         )
         if hyperparams["env"] == "CliffWalking-v0":
-            r = evaluate_qlearning_with_environment(
+            r, _ = evaluate_qlearning_with_environment(
                 dqn, eval_env, hyperparams["max_episode_len"]
             )
         else:
             env_evaluator = EnvironmentEvaluator(env, n_trials=1)
             r = env_evaluator(dqn, dataset=None)
         rewards.append(r)
-    return rewards
+    
+    # Evaluate the final policy on the evaluation environment
+    _, dataset = evaluate_qlearning_with_environment(
+        dqn, eval_env, hyperparams["max_episode_len"]
+    )
+    return rewards, dataset, offline_dataset
 
 
 def online_training_rand(env, eval_env, hyperparams, explorer=None):
@@ -147,21 +182,26 @@ def online_training_rand(env, eval_env, hyperparams, explorer=None):
             experiment_name=f"{timestamp}_online_training",
         )
         if hyperparams["env"] == "CliffWalking-v0":
-            r = evaluate_qlearning_with_environment(
+            r, _ = evaluate_qlearning_with_environment(
                 dqn, eval_env, hyperparams["max_episode_len"]
             )
         else:
             env_evaluator = EnvironmentEvaluator(env, n_trials=1)
             r = env_evaluator(dqn, dataset=None)
         rewards.append(r)
-    return rewards
+    
+    # Evaluate the final policy on the evaluation environment
+    _, dataset = evaluate_qlearning_with_environment(
+        dqn, eval_env, hyperparams["max_episode_len"]
+    )
+    return rewards, dataset, pretrain_dataset
 
 
 if __name__ == "__main__":
     hyperparams = {
         "env": "FrozenLake-v1",  # "CartPole-v0", "MountainCar-v0", "FrozenLake-v1", "CliffWalking-v0", "RepresentedPong-v0"
         "seed": 42069,
-        "n_episodes": 150,  # 5000,
+        "n_episodes": 150,  # Keep this here to use in the run_exp_rand and run_exp_split functions
         "max_episode_len": 200,  # Around 10h per 100k steps in Leviathan server
         "eps": 0.1,  # epsilon for exploration
         "n_exp": 5,
@@ -204,9 +244,10 @@ if __name__ == "__main__":
     # setup explorers
     explorer = d3rlpy.algos.ConstantEpsilonGreedy(hyperparams["eps"])
 
-    cache = {}
+    cache_rand = {}
+    cache_split = {}
 
-    def run_exp(
+    def run_exp_rand(
         n_pretrain_steps, n_pretrain_eps, cache, env, eval_env, hyperparams, explorer
     ):
         hyperparams["n_pretrain_steps"] = n_pretrain_steps
@@ -217,20 +258,53 @@ if __name__ == "__main__":
         for i in range(hyperparams["n_exp"]):
             cache[
                 f'pretrain_{hyperparams["n_pretrain_eps"]}_eps_{hyperparams["n_pretrain_steps"]}_steps_{i}_rand'
+            ], cache[
+                f'pretrain_{hyperparams["n_pretrain_eps"]}_eps_{hyperparams["n_pretrain_steps"]}_steps_{i}_rand_dataset'
+            ], cache[
+                f'pretrain_{hyperparams["n_pretrain_eps"]}_eps_{hyperparams["n_pretrain_steps"]}_steps_{i}_rand_offline_dataset'
             ] = online_training_rand(env, eval_env, hyperparams, explorer)
-            # cache[f'pretrain_{hyperparams["n_pretrain_eps"]}_eps_{hyperparams["n_pretrain_steps"]}_steps_{i}'] = online_training_split(env, eval_env, hyperparams, explorer)
         return cache
 
-    cache = run_exp(1000, 30, cache, env, eval_env, hyperparams, explorer)
-    cache = run_exp(1000, 20, cache, env, eval_env, hyperparams, explorer)
-    cache = run_exp(1000, 10, cache, env, eval_env, hyperparams, explorer)
-    cache = run_exp(3000, 30, cache, env, eval_env, hyperparams, explorer)
-    cache = run_exp(3000, 20, cache, env, eval_env, hyperparams, explorer)
-    cache = run_exp(3000, 10, cache, env, eval_env, hyperparams, explorer)
+    def run_exp_split(
+        n_pretrain_steps, n_pretrain_eps, cache, env, eval_env, hyperparams, explorer
+    ):
+        hyperparams["n_pretrain_steps"] = n_pretrain_steps
+        hyperparams["n_pretrain_eps"] = n_pretrain_eps
+        hyperparams["n_online_eps"] = (
+            hyperparams["n_episodes"] - hyperparams["n_pretrain_eps"]
+        )
+        for i in range(hyperparams["n_exp"]):
+            cache[
+                f'pretrain_{hyperparams["n_pretrain_eps"]}_eps_{hyperparams["n_pretrain_steps"]}_steps_{i}'
+            ], cache[
+                f'pretrain_{hyperparams["n_pretrain_eps"]}_eps_{hyperparams["n_pretrain_steps"]}_steps_{i}_dataset'
+            ], cache[
+                f'pretrain_{hyperparams["n_pretrain_eps"]}_eps_{hyperparams["n_pretrain_steps"]}_steps_{i}_offline_dataset'
+            ] = online_training_split(env, eval_env, hyperparams, explorer)
+        return cache
+
+    cache_rand = run_exp_rand(1000, 30, cache_rand, env, eval_env, hyperparams, explorer)
+    cache_rand = run_exp_rand(1000, 20, cache_rand, env, eval_env, hyperparams, explorer)
+    cache_rand = run_exp_rand(1000, 10, cache_rand, env, eval_env, hyperparams, explorer)
+    cache_rand = run_exp_rand(3000, 30, cache_rand, env, eval_env, hyperparams, explorer)
+    cache_rand = run_exp_rand(3000, 20, cache_rand, env, eval_env, hyperparams, explorer)
+    cache_rand = run_exp_rand(3000, 10, cache_rand, env, eval_env, hyperparams, explorer)
+
+    cache_split = run_exp_split(1000, 30, cache_split, env, eval_env, hyperparams, explorer)
+    cache_split = run_exp_split(1000, 20, cache_split, env, eval_env, hyperparams, explorer)
+    cache_split = run_exp_split(1000, 10, cache_split, env, eval_env, hyperparams, explorer)
+    cache_split = run_exp_split(3000, 30, cache_split, env, eval_env, hyperparams, explorer)
+    cache_split = run_exp_split(3000, 20, cache_split, env, eval_env, hyperparams, explorer)
+    cache_split = run_exp_split(3000, 10, cache_split, env, eval_env, hyperparams, explorer)
 
     with open(
         f'data/cache_{hyperparams["env"].split("-")[0]}_on_policy_pretrain_exp_rand.pkl',
         "wb",
     ) as file:
-        # with open(f'data/cache_{hyperparams["env"].split("-")[0]}_on_policy_pretrain_exp.pkl', 'wb') as file:
-        pickle.dump(cache, file)
+        pickle.dump(cache_rand, file)
+
+    with open(
+        f'data/cache_{hyperparams["env"].split("-")[0]}_on_policy_pretrain_exp.pkl',
+        "wb",
+    ) as file:
+        pickle.dump(cache_split, file)

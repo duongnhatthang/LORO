@@ -36,8 +36,9 @@ def evaluate_qlearning_with_environment(
     epsilon: float = 0.0,
 ) -> float:
     """
-    From d3rlpy.metrics.EnvironmentEvaluator
+    From d3rlpy.metrics.utility.evaluate_with_environment
     Modified because the original code bugged out on CliffWalking-v0. The episode never end.
+    Also return the dataset of the episodes.
 
     Returns average environment score.
 
@@ -65,6 +66,7 @@ def evaluate_qlearning_with_environment(
         average score.
     """
     episode_rewards = []
+    observations, actions, rewards, terminals = [], [], [], []
     for _ in range(n_trials):
         observation, _ = env.reset()
         episode_reward = 0.0
@@ -86,13 +88,24 @@ def evaluate_qlearning_with_environment(
             observation, reward, done, truncated, _ = env.step(action)
             episode_reward += float(reward)
             count += 1
+            observations.append(observation)
+            actions.append(action)
+            rewards.append(reward)
             if count >= max_episode_len:
                 done = True
+            terminals.append(int(done or truncated))
 
             if done or truncated:
                 break
         episode_rewards.append(episode_reward)
-    return float(np.mean(episode_rewards))
+
+    dataset = d3rlpy.dataset.MDPDataset(
+        observations=np.array(observations),
+        actions=np.array(actions),
+        rewards=np.array(rewards),
+        terminals=np.array(terminals),
+    )
+    return float(np.mean(episode_rewards)), dataset
 
 
 def online_training(env, eval_env, hyperparams, explorer=None, model=None):
@@ -161,21 +174,26 @@ def online_training(env, eval_env, hyperparams, explorer=None, model=None):
             experiment_name=f"{timestamp}_online_training",
         )
         if hyperparams["env"] == "CliffWalking-v0":
-            r = evaluate_qlearning_with_environment(
+            r, _ = evaluate_qlearning_with_environment(
                 dqn, eval_env, hyperparams["max_episode_len"]
             )
         else:
             env_evaluator = EnvironmentEvaluator(env, n_trials=1)
             r = env_evaluator(dqn, dataset=None)
         rewards.append(r)
-    return rewards
+    
+    # Evaluate the final policy on the evaluation environment
+    _, dataset = evaluate_qlearning_with_environment(
+        dqn, eval_env, hyperparams["max_episode_len"]
+    )
+    return rewards, dataset
 
 
 if __name__ == "__main__":
     hyperparams = {
         "env": "CliffWalking-v0",  # "CartPole-v0", "MountainCar-v0", "FrozenLake-v1", Pendulum-v1, "CliffWalking-v0", "RepresentedPong-v0"
         "seed": 42069,
-        "n_episodes": 200,  # 5000,
+        # "n_episodes": 200,  # 5000,
         "max_episode_len": 200,  # Around 10h per 100k steps in Leviathan server
         "eps": 0.1,  # epsilon for exploration
         "n_exp": 5,
@@ -237,11 +255,11 @@ if __name__ == "__main__":
             0  # Set to 0 to avoid pretraining when using pre-trained models
         )
         for i in range(hyperparams["n_exp"]):
-            cache[f"pretrain_32b_1000_{i}"] = online_training(
+            cache[f"pretrain_32b_1000_{i}"], cache[f"pretrain_32b_1000_{i}_dataset"] = online_training(
                 env, eval_env, hyperparams, explorer, pretrain_32b_1000_dqn
             )
         for i in range(hyperparams["n_exp"]):
-            cache[f"pretrain_32b_3000_{i}"] = online_training(
+            cache[f"pretrain_32b_3000_{i}"], cache[f"pretrain_32b_3000_{i}_dataset"] = online_training(
                 env, eval_env, hyperparams, explorer, pretrain_32b_3000_dqn
             )
 
@@ -249,12 +267,12 @@ if __name__ == "__main__":
             tmp_n_pretrain_eps  # restore n_pretrain_eps for subsequent runs
         )
         for i in range(hyperparams["n_exp"]):
-            cache[f"online_{i}"] = online_training(env, eval_env, hyperparams, explorer)
+            cache[f"online_{i}"], cache[f"online_{i}_dataset"] = online_training(env, eval_env, hyperparams, explorer)
 
         # Mixed pretraining and online data. finetune is a lagacy name.
         hyperparams["data_path"] = path_32b
         for i in range(hyperparams["n_exp"]):
-            cache[f"finetune_32b_{i}"] = online_training(
+            cache[f"finetune_32b_{i}"], cache[f"finetune_32b_{i}_dataset"] = online_training(
                 env, eval_env, hyperparams, explorer
             )
 
@@ -276,11 +294,11 @@ if __name__ == "__main__":
             0  # Set to 0 to avoid pretraining when using pre-trained models
         )
         for i in range(hyperparams["n_exp"]):
-            cache[f"pretrain_7b_1000_{i}"] = online_training(
+            cache[f"pretrain_7b_1000_{i}"], cache[f"pretrain_7b_1000_{i}_dataset"] = online_training(
                 env, eval_env, hyperparams, explorer, pretrain_7b_1000_dqn
             )
         for i in range(hyperparams["n_exp"]):
-            cache[f"pretrain_7b_3000_{i}"] = online_training(
+            cache[f"pretrain_7b_3000_{i}"], cache[f"pretrain_7b_3000_{i}_dataset"] = online_training(
                 env, eval_env, hyperparams, explorer, pretrain_7b_3000_dqn
             )
 
@@ -290,14 +308,14 @@ if __name__ == "__main__":
         if "online_0" not in cache.keys():
             # Only run online training if it hasn't been done before
             for i in range(hyperparams["n_exp"]):
-                cache[f"online_{i}"] = online_training(
+                cache[f"online_{i}"], cache[f"online_{i}_dataset"] = online_training(
                     env, eval_env, hyperparams, explorer
                 )
 
         # Mixed pretraining and online data. finetune is a lagacy name.
         hyperparams["data_path"] = path_7b
         for i in range(hyperparams["n_exp"]):
-            cache[f"finetune_7b_{i}"] = online_training(
+            cache[f"finetune_7b_{i}"], cache[f"finetune_7b_{i}_dataset"] = online_training(
                 env, eval_env, hyperparams, explorer
             )
 
