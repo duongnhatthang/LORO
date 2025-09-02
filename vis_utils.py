@@ -5,134 +5,89 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import Rbf
 import seaborn as sns
 
+def reformat_on_policy_pretrain_cache(on_policy_pretrain_cache, n_exp, n_episodes):
+    for eps in [10, 20, 30]:
+        for steps in [1000, 3000]:
+            for i in range(n_exp):
+                if f"pretrain_{eps}_eps_{steps}_steps_{i}" in on_policy_pretrain_cache:
+                    for j, value in enumerate(on_policy_pretrain_cache[f"pretrain_{eps}_eps_{steps}_steps_{i}"]):
+                        if isinstance(value, np.ndarray) and value.shape == (1,):
+                            on_policy_pretrain_cache[f"pretrain_{eps}_eps_{steps}_steps_{i}"][j] = value[0]
+                    l = len(on_policy_pretrain_cache[f"pretrain_{eps}_eps_{steps}_steps_{i}"])
+                    if l < n_episodes:
+                        on_policy_pretrain_cache[f"pretrain_{eps}_eps_{steps}_steps_{i}"].extend([on_policy_pretrain_cache[f"pretrain_{eps}_eps_{steps}_steps_{i}"][-1]] * (n_episodes - l))
+                # print(f"pretrain_{eps}_eps_{steps}_steps_{i}: {on_policy_pretrain_cache[f'pretrain_{eps}_eps_{steps}_steps_{i}'][5:15]}")
+    return on_policy_pretrain_cache
+
+def load_cache(env_name, n_eps, suffix):
+    with open(
+        f"data/cache_{env_name}_Neps_{n_eps}{suffix}.pkl", "rb"
+    ) as file:
+        cache = pickle.load(file)
+    return cache
+
+def load_cache_on_policy_or_rand(env_name, is_rand=False):
+    tmp_str = "_rand" if is_rand else ""
+    with open(
+        f"data/cache_{env_name}_on_policy_pretrain_exp{tmp_str}.pkl", "rb"
+    ) as file:
+        cache = pickle.load(file)
+    return cache
+
+def process_on_policy_pretrain(cache, n_pretrain_eps, n_episodes, n_pretrain_steps, n_exp, is_rand=False):
+    n_online_eps = n_episodes - n_pretrain_eps
+    returns = np.zeros((n_exp, n_episodes))
+    for i in range(n_exp):
+        returns[i] = np.squeeze(np.array(cache[
+            f"pretrain_{n_pretrain_eps}_eps_{n_pretrain_steps}_steps_{i}{'_rand' if is_rand else ''}"
+        ][: n_pretrain_eps]+cache[
+            f"pretrain_{n_pretrain_eps}_eps_{n_pretrain_steps}_steps_{i}{'_rand' if is_rand else ''}"
+        ][-n_online_eps:]))
+    return np.mean(returns, axis=0), np.std(returns, axis=0)
+
+def processing_offline_online_data(avg_offline_returns, online_cache, n_pretrain_eps, online_cache_key, n_exp, n_episodes):
+    """
+    Merge offline and the average of online data (offline_returns[:n_pretrain_eps] + average(online_cache[online_cache_key][-n_online_eps:])).
+    avg_offline_returns: the returns of the offline data
+    online_cache: the cache of the online data
+    n_pretrain_eps: the number of pretrain episodes
+    online_cache_key: the key of the online data
+    n_exp: the number of experiments
+    n_episodes: the number of episodes
+
+    Returns: the merged data
+    """
+    returns = np.zeros((n_exp, n_episodes))
+    for i in range(n_exp):
+        for j in range(n_episodes - n_pretrain_eps):
+            returns[i][n_pretrain_eps + j] = online_cache[f"{online_cache_key}_{i}"][j]
+    average_returns = np.mean(returns, axis=0)
+    std_returns = np.std(returns, axis=0)
+    average_returns[:n_pretrain_eps] = avg_offline_returns[:n_pretrain_eps]
+    std_returns[:n_pretrain_eps] = np.zeros(n_pretrain_eps)
+    return average_returns, std_returns
+
 def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, Qwen_7B_SFT, mean_random):
-    # suffix = "_typo" # For debugging
     suffix = ""
-    with open(
-        f"data/cache_{hyperparams['env'].split('-')[0]}_Neps_10{suffix}.pkl", "rb"
-    ) as file:
-        cache10 = pickle.load(file)
-    with open(
-        f"data/cache_{hyperparams['env'].split('-')[0]}_Neps_20{suffix}.pkl", "rb"
-    ) as file:
-        cache20 = pickle.load(file)
-    with open(
-        f"data/cache_{hyperparams['env'].split('-')[0]}_Neps_30{suffix}.pkl", "rb"
-    ) as file:
-        cache30 = pickle.load(file)
-    with open(
-        f'data/cache_{hyperparams["env"].split("-")[0]}_on_policy_pretrain_exp.pkl',
-        "rb",
-    ) as file:
-        on_policy_pretrain_cache = pickle.load(file)
-    with open(
-        f'data/cache_{hyperparams["env"].split("-")[0]}_on_policy_pretrain_exp_rand.pkl',
-        "rb",
-    ) as file:
-        rand_pretrain_cache = pickle.load(file)
+    cache10 = load_cache(hyperparams["env"].split("-")[0], 10, suffix)
+    cache20 = load_cache(hyperparams["env"].split("-")[0], 20, suffix)
+    cache30 = load_cache(hyperparams["env"].split("-")[0], 30, suffix)
+    on_policy_pretrain_cache = load_cache_on_policy_or_rand(hyperparams["env"].split("-")[0])
+    rand_pretrain_cache = load_cache_on_policy_or_rand(hyperparams["env"].split("-")[0], is_rand=True)
+    
     try:
-        with open(
-            f"data/cache_{hyperparams['env'].split('-')[0]}_Neps_10SFT{suffix}.pkl",
-            "rb",
-        ) as file:
-            cache10SFT = pickle.load(file)
-        with open(
-            f"data/cache_{hyperparams['env'].split('-')[0]}_Neps_20SFT{suffix}.pkl",
-            "rb",
-        ) as file:
-            cache20SFT = pickle.load(file)
-        with open(
-            f"data/cache_{hyperparams['env'].split('-')[0]}_Neps_30SFT{suffix}.pkl",
-            "rb",
-        ) as file:
-            cache30SFT = pickle.load(file)
-        pretrain_7b_1000_pre_10SFT_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_7b_3000_pre_10SFT_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_7b_1000_pre_20SFT_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_7b_3000_pre_20SFT_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_7b_1000_pre_30SFT_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_7b_3000_pre_30SFT_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
+        suffix = "SFT"
+        cache10SFT = load_cache(hyperparams["env"].split("-")[0], 10, suffix)
+        cache20SFT = load_cache(hyperparams["env"].split("-")[0], 20, suffix)
+        cache30SFT = load_cache(hyperparams["env"].split("-")[0], 30, suffix)
 
-        for i in range(hyperparams["n_exp"]):
-            for j in range(hyperparams["n_episodes"] - 10):
-                pretrain_7b_1000_pre_10SFT_returns[i][10 + j] = cache10SFT[
-                    f"pretrain_7b_1000_{i}"
-                ][j]
-                pretrain_7b_3000_pre_10SFT_returns[i][10 + j] = cache10SFT[
-                    f"pretrain_7b_3000_{i}"
-                ][j]
+        mean_pretrain_7b_1000_pre_10SFT, std_pretrain_7b_1000_pre_10SFT = processing_offline_online_data(Qwen_7B, cache10SFT, 10, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_7b_3000_pre_10SFT, std_pretrain_7b_3000_pre_10SFT = processing_offline_online_data(Qwen_7B, cache10SFT, 10, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_7b_1000_pre_20SFT, std_pretrain_7b_1000_pre_20SFT = processing_offline_online_data(Qwen_7B, cache20SFT, 20, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_7b_3000_pre_20SFT, std_pretrain_7b_3000_pre_20SFT = processing_offline_online_data(Qwen_7B, cache20SFT, 20, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_7b_1000_pre_30SFT, std_pretrain_7b_1000_pre_30SFT = processing_offline_online_data(Qwen_7B, cache30SFT, 30, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_7b_3000_pre_30SFT, std_pretrain_7b_3000_pre_30SFT = processing_offline_online_data(Qwen_7B, cache30SFT, 30, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
 
-            for j in range(hyperparams["n_episodes"] - 20):
-                pretrain_7b_1000_pre_20SFT_returns[i][20 + j] = cache20SFT[
-                    f"pretrain_7b_1000_{i}"
-                ][j]
-                pretrain_7b_3000_pre_20SFT_returns[i][20 + j] = cache20SFT[
-                    f"pretrain_7b_3000_{i}"
-                ][j]
-
-            for j in range(hyperparams["n_episodes"] - 30):
-                pretrain_7b_1000_pre_30SFT_returns[i][30 + j] = cache30SFT[
-                    f"pretrain_7b_1000_{i}"
-                ][j]
-                pretrain_7b_3000_pre_30SFT_returns[i][30 + j] = cache30SFT[
-                    f"pretrain_7b_3000_{i}"
-                ][j]
-        mean_pretrain_7b_1000_pre_10SFT = np.mean(
-            pretrain_7b_1000_pre_10SFT_returns, axis=0
-        )
-        std_pretrain_7b_1000_pre_10SFT = np.std(
-            pretrain_7b_1000_pre_10SFT_returns, axis=0
-        )
-        mean_pretrain_7b_3000_pre_10SFT = np.mean(
-            pretrain_7b_3000_pre_10SFT_returns, axis=0
-        )
-        std_pretrain_7b_3000_pre_10SFT = np.std(
-            pretrain_7b_3000_pre_10SFT_returns, axis=0
-        )
-        mean_pretrain_7b_1000_pre_10SFT[:10] = Qwen_7B_SFT[:10]
-        mean_pretrain_7b_3000_pre_10SFT[:10] = Qwen_7B_SFT[:10]
-
-        mean_pretrain_7b_1000_pre_20SFT = np.mean(
-            pretrain_7b_1000_pre_20SFT_returns, axis=0
-        )
-        std_pretrain_7b_1000_pre_20SFT = np.std(
-            pretrain_7b_1000_pre_20SFT_returns, axis=0
-        )
-        mean_pretrain_7b_3000_pre_20SFT = np.mean(
-            pretrain_7b_3000_pre_20SFT_returns, axis=0
-        )
-        std_pretrain_7b_3000_pre_20SFT = np.std(
-            pretrain_7b_3000_pre_20SFT_returns, axis=0
-        )
-        mean_pretrain_7b_1000_pre_20SFT[:20] = Qwen_7B_SFT[:20]
-        mean_pretrain_7b_3000_pre_20SFT[:20] = Qwen_7B_SFT[:20]
-
-        mean_pretrain_7b_1000_pre_30SFT = np.mean(
-            pretrain_7b_1000_pre_30SFT_returns, axis=0
-        )
-        std_pretrain_7b_1000_pre_30SFT = np.std(
-            pretrain_7b_1000_pre_30SFT_returns, axis=0
-        )
-        mean_pretrain_7b_3000_pre_30SFT = np.mean(
-            pretrain_7b_3000_pre_30SFT_returns, axis=0
-        )
-        std_pretrain_7b_3000_pre_30SFT = np.std(
-            pretrain_7b_3000_pre_30SFT_returns, axis=0
-        )
-        mean_pretrain_7b_1000_pre_30SFT[:30] = Qwen_7B_SFT[:30]
-        mean_pretrain_7b_3000_pre_30SFT[:30] = Qwen_7B_SFT[:30]
         out_dict_SFT = {
             "mean_pretrain_7b_1000_pre_10SFT": mean_pretrain_7b_1000_pre_10SFT,
             "std_pretrain_7b_1000_pre_10SFT": std_pretrain_7b_1000_pre_10SFT,
@@ -150,182 +105,24 @@ def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, Qwen_7B_SFT, mea
     except:
         pass
     try:
-        with open(
-            f"data/cache_{hyperparams['env'].split('-')[0]}_Neps_10DS{suffix}.pkl", "rb"
-        ) as file:
-            cache10DS = pickle.load(file)
-        with open(
-            f"data/cache_{hyperparams['env'].split('-')[0]}_Neps_20DS{suffix}.pkl", "rb"
-        ) as file:
-            cache20DS = pickle.load(file)
-        with open(
-            f"data/cache_{hyperparams['env'].split('-')[0]}_Neps_30DS{suffix}.pkl", "rb"
-        ) as file:
-            cache30DS = pickle.load(file)
-        pretrain_7b_1000_pre_10DS_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_7b_3000_pre_10DS_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_14b_1000_pre_10DS_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_14b_3000_pre_10DS_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_7b_1000_pre_20DS_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_7b_3000_pre_20DS_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_14b_1000_pre_20DS_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_14b_3000_pre_20DS_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_7b_1000_pre_30DS_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_7b_3000_pre_30DS_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_14b_1000_pre_30DS_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        pretrain_14b_3000_pre_30DS_returns = np.zeros(
-            (hyperparams["n_exp"], hyperparams["n_episodes"])
-        )
-        for i in range(hyperparams["n_exp"]):
-            for j in range(hyperparams["n_episodes"] - 10):
-                pretrain_7b_1000_pre_10DS_returns[i][10 + j] = cache10DS[
-                    f"pretrain_7b_1000_{i}"
-                ][j]
-                pretrain_14b_1000_pre_10DS_returns[i][10 + j] = cache10DS[
-                    f"pretrain_32b_1000_{i}"
-                ][j]
-                pretrain_7b_3000_pre_10DS_returns[i][10 + j] = cache10DS[
-                    f"pretrain_7b_3000_{i}"
-                ][j]
-                pretrain_14b_3000_pre_10DS_returns[i][10 + j] = cache10DS[
-                    f"pretrain_32b_3000_{i}"
-                ][j]
+        suffix = "DS"
+        cache10DS = load_cache(hyperparams["env"].split("-")[0], 10, suffix)
+        cache20DS = load_cache(hyperparams["env"].split("-")[0], 20, suffix)
+        cache30DS = load_cache(hyperparams["env"].split("-")[0], 30, suffix)
 
-            for j in range(hyperparams["n_episodes"] - 20):
-                pretrain_7b_1000_pre_20DS_returns[i][20 + j] = cache20DS[
-                    f"pretrain_7b_1000_{i}"
-                ][j]
-                pretrain_14b_1000_pre_20DS_returns[i][20 + j] = cache20DS[
-                    f"pretrain_32b_1000_{i}"
-                ][j]
-                pretrain_7b_3000_pre_20DS_returns[i][20 + j] = cache20DS[
-                    f"pretrain_7b_3000_{i}"
-                ][j]
-                pretrain_14b_3000_pre_20DS_returns[i][20 + j] = cache20DS[
-                    f"pretrain_32b_3000_{i}"
-                ][j]
+        mean_pretrain_7b_1000_pre_10DS, std_pretrain_7b_1000_pre_10DS = processing_offline_online_data(DS_7B, cache10DS, 10, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_7b_3000_pre_10DS, std_pretrain_7b_3000_pre_10DS = processing_offline_online_data(DS_7B, cache10DS, 10, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_14b_1000_pre_10DS, std_pretrain_14b_1000_pre_10DS = processing_offline_online_data(DS_14B, cache10DS, 10, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_14b_3000_pre_10DS, std_pretrain_14b_3000_pre_10DS = processing_offline_online_data(DS_14B, cache10DS, 10, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_7b_1000_pre_20DS, std_pretrain_7b_1000_pre_20DS = processing_offline_online_data(DS_7B, cache20DS, 20, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_7b_3000_pre_20DS, std_pretrain_7b_3000_pre_20DS = processing_offline_online_data(DS_7B, cache20DS, 20, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_14b_1000_pre_20DS, std_pretrain_14b_1000_pre_20DS = processing_offline_online_data(DS_14B, cache20DS, 20, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_14b_3000_pre_20DS, std_pretrain_14b_3000_pre_20DS = processing_offline_online_data(DS_14B, cache20DS, 20, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_7b_1000_pre_30DS, std_pretrain_7b_1000_pre_30DS = processing_offline_online_data(DS_7B, cache30DS, 30, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_7b_3000_pre_30DS, std_pretrain_7b_3000_pre_30DS = processing_offline_online_data(DS_7B, cache30DS, 30, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_14b_1000_pre_30DS, std_pretrain_14b_1000_pre_30DS = processing_offline_online_data(DS_14B, cache30DS, 30, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_14b_3000_pre_30DS, std_pretrain_14b_3000_pre_30DS = processing_offline_online_data(DS_14B, cache30DS, 30, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
 
-            for j in range(hyperparams["n_episodes"] - 30):
-                pretrain_7b_1000_pre_30DS_returns[i][30 + j] = cache30DS[
-                    f"pretrain_7b_1000_{i}"
-                ][j]
-                pretrain_14b_1000_pre_30DS_returns[i][30 + j] = cache30DS[
-                    f"pretrain_32b_1000_{i}"
-                ][j]
-                pretrain_7b_3000_pre_30DS_returns[i][30 + j] = cache30DS[
-                    f"pretrain_7b_3000_{i}"
-                ][j]
-                pretrain_14b_3000_pre_30DS_returns[i][30 + j] = cache30DS[
-                    f"pretrain_32b_3000_{i}"
-                ][j]
-        mean_pretrain_7b_1000_pre_10DS = np.mean(
-            pretrain_7b_1000_pre_10DS_returns, axis=0
-        )
-        std_pretrain_7b_1000_pre_10DS = np.std(
-            pretrain_7b_1000_pre_10DS_returns, axis=0
-        )
-        mean_pretrain_7b_3000_pre_10DS = np.mean(
-            pretrain_7b_3000_pre_10DS_returns, axis=0
-        )
-        std_pretrain_7b_3000_pre_10DS = np.std(
-            pretrain_7b_3000_pre_10DS_returns, axis=0
-        )
-        mean_pretrain_14b_1000_pre_10DS = np.mean(
-            pretrain_14b_1000_pre_10DS_returns, axis=0
-        )
-        std_pretrain_14b_1000_pre_10DS = np.std(
-            pretrain_14b_1000_pre_10DS_returns, axis=0
-        )
-        mean_pretrain_14b_3000_pre_10DS = np.mean(
-            pretrain_14b_3000_pre_10DS_returns, axis=0
-        )
-        std_pretrain_14b_3000_pre_10DS = np.std(
-            pretrain_14b_3000_pre_10DS_returns, axis=0
-        )
-        mean_pretrain_14b_1000_pre_10DS[:10] = DS_14B[:10]
-        mean_pretrain_7b_1000_pre_10DS[:10] = DS_7B[:10]
-        mean_pretrain_14b_3000_pre_10DS[:10] = DS_14B[:10]
-        mean_pretrain_7b_3000_pre_10DS[:10] = DS_7B[:10]
-
-        mean_pretrain_7b_1000_pre_20DS = np.mean(
-            pretrain_7b_1000_pre_20DS_returns, axis=0
-        )
-        std_pretrain_7b_1000_pre_20DS = np.std(
-            pretrain_7b_1000_pre_20DS_returns, axis=0
-        )
-        mean_pretrain_7b_3000_pre_20DS = np.mean(
-            pretrain_7b_3000_pre_20DS_returns, axis=0
-        )
-        std_pretrain_7b_3000_pre_20DS = np.std(
-            pretrain_7b_3000_pre_20DS_returns, axis=0
-        )
-        mean_pretrain_14b_1000_pre_20DS = np.mean(
-            pretrain_14b_1000_pre_20DS_returns, axis=0
-        )
-        std_pretrain_14b_1000_pre_20DS = np.std(
-            pretrain_14b_1000_pre_20DS_returns, axis=0
-        )
-        mean_pretrain_14b_3000_pre_20DS = np.mean(
-            pretrain_14b_3000_pre_20DS_returns, axis=0
-        )
-        std_pretrain_14b_3000_pre_20DS = np.std(
-            pretrain_14b_3000_pre_20DS_returns, axis=0
-        )
-        mean_pretrain_14b_1000_pre_20DS[:20] = DS_14B[:20]
-        mean_pretrain_7b_1000_pre_20DS[:20] = DS_7B[:20]
-        mean_pretrain_14b_3000_pre_20DS[:20] = DS_14B[:20]
-        mean_pretrain_7b_3000_pre_20DS[:20] = DS_7B[:20]
-
-        mean_pretrain_7b_1000_pre_30DS = np.mean(
-            pretrain_7b_1000_pre_30DS_returns, axis=0
-        )
-        std_pretrain_7b_1000_pre_30DS = np.std(
-            pretrain_7b_1000_pre_30DS_returns, axis=0
-        )
-        mean_pretrain_7b_3000_pre_30DS = np.mean(
-            pretrain_7b_3000_pre_30DS_returns, axis=0
-        )
-        std_pretrain_7b_3000_pre_30DS = np.std(
-            pretrain_7b_3000_pre_30DS_returns, axis=0
-        )
-        mean_pretrain_14b_1000_pre_30DS = np.mean(
-            pretrain_14b_1000_pre_30DS_returns, axis=0
-        )
-        std_pretrain_14b_1000_pre_30DS = np.std(
-            pretrain_14b_1000_pre_30DS_returns, axis=0
-        )
-        mean_pretrain_14b_3000_pre_30DS = np.mean(
-            pretrain_14b_3000_pre_30DS_returns, axis=0
-        )
-        std_pretrain_14b_3000_pre_30DS = np.std(
-            pretrain_14b_3000_pre_30DS_returns, axis=0
-        )
-        mean_pretrain_14b_1000_pre_30DS[:30] = DS_14B[:30]
-        mean_pretrain_7b_1000_pre_30DS[:30] = DS_7B[:30]
-        mean_pretrain_14b_3000_pre_30DS[:30] = DS_14B[:30]
-        mean_pretrain_7b_3000_pre_30DS[:30] = DS_7B[:30]
         out_dict_DS = {
             "mean_pretrain_7b_1000_pre_10DS": mean_pretrain_7b_1000_pre_10DS,
             "std_pretrain_7b_1000_pre_10DS": std_pretrain_7b_1000_pre_10DS,
@@ -355,288 +152,50 @@ def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, Qwen_7B_SFT, mea
     except:
         pass
     online_returns = np.zeros((hyperparams["n_exp"], hyperparams["n_episodes"]))
-    mix_7b_pre_10_returns = np.zeros((hyperparams["n_exp"], hyperparams["n_episodes"]))
-    mix_32b_pre_10_returns = np.zeros((hyperparams["n_exp"], hyperparams["n_episodes"]))
-    pretrain_7b_1000_pre_10_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    pretrain_32b_1000_pre_10_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    pretrain_7b_3000_pre_10_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    pretrain_32b_3000_pre_10_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    on_pol_pretrain_1000_pre_10_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    on_pol_pretrain_3000_pre_10_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    rand_pretrain_1000_pre_10_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    rand_pretrain_3000_pre_10_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
 
-    mix_7b_pre_20_returns = np.zeros((hyperparams["n_exp"], hyperparams["n_episodes"]))
-    mix_32b_pre_20_returns = np.zeros((hyperparams["n_exp"], hyperparams["n_episodes"]))
-    pretrain_7b_1000_pre_20_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    pretrain_32b_1000_pre_20_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    pretrain_7b_3000_pre_20_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    pretrain_32b_3000_pre_20_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    on_pol_pretrain_1000_pre_20_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    on_pol_pretrain_3000_pre_20_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    rand_pretrain_1000_pre_20_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    rand_pretrain_3000_pre_20_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
+    on_policy_pretrain_cache = reformat_on_policy_pretrain_cache(on_policy_pretrain_cache, hyperparams["n_exp"], hyperparams["n_episodes"])
 
-    mix_7b_pre_30_returns = np.zeros((hyperparams["n_exp"], hyperparams["n_episodes"]))
-    mix_32b_pre_30_returns = np.zeros((hyperparams["n_exp"], hyperparams["n_episodes"]))
-    pretrain_7b_1000_pre_30_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    pretrain_32b_1000_pre_30_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    pretrain_7b_3000_pre_30_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    pretrain_32b_3000_pre_30_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    on_pol_pretrain_1000_pre_30_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    on_pol_pretrain_3000_pre_30_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    rand_pretrain_1000_pre_30_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
-    rand_pretrain_3000_pre_30_returns = np.zeros(
-        (hyperparams["n_exp"], hyperparams["n_episodes"])
-    )
+    mean_on_pol_pretrain_1000_pre_10, std_on_pol_pretrain_1000_pre_10 = process_on_policy_pretrain(on_policy_pretrain_cache, 10, hyperparams["n_episodes"], 1000, hyperparams["n_exp"])
+    mean_on_pol_pretrain_3000_pre_10, std_on_pol_pretrain_3000_pre_10 = process_on_policy_pretrain(on_policy_pretrain_cache, 10, hyperparams["n_episodes"], 3000, hyperparams["n_exp"])
+    mean_on_pol_pretrain_1000_pre_20, std_on_pol_pretrain_1000_pre_20 = process_on_policy_pretrain(on_policy_pretrain_cache, 20, hyperparams["n_episodes"], 1000, hyperparams["n_exp"])
+    mean_on_pol_pretrain_3000_pre_20, std_on_pol_pretrain_3000_pre_20 = process_on_policy_pretrain(on_policy_pretrain_cache, 20, hyperparams["n_episodes"], 3000, hyperparams["n_exp"])
+    mean_on_pol_pretrain_1000_pre_30, std_on_pol_pretrain_1000_pre_30 = process_on_policy_pretrain(on_policy_pretrain_cache, 30, hyperparams["n_episodes"], 1000, hyperparams["n_exp"])
+    mean_on_pol_pretrain_3000_pre_30, std_on_pol_pretrain_3000_pre_30 = process_on_policy_pretrain(on_policy_pretrain_cache, 30, hyperparams["n_episodes"], 3000, hyperparams["n_exp"])
+
+    mean_rand_pretrain_1000_pre_10, std_rand_pretrain_1000_pre_10 = process_on_policy_pretrain(rand_pretrain_cache, 10, hyperparams["n_episodes"], 1000, hyperparams["n_exp"], True)
+    mean_rand_pretrain_3000_pre_10, std_rand_pretrain_3000_pre_10 = process_on_policy_pretrain(rand_pretrain_cache, 10, hyperparams["n_episodes"], 3000, hyperparams["n_exp"], True)
+    mean_rand_pretrain_1000_pre_20, std_rand_pretrain_1000_pre_20 = process_on_policy_pretrain(rand_pretrain_cache, 20, hyperparams["n_episodes"], 1000, hyperparams["n_exp"], True)
+    mean_rand_pretrain_3000_pre_20, std_rand_pretrain_3000_pre_20 = process_on_policy_pretrain(rand_pretrain_cache, 20, hyperparams["n_episodes"], 3000, hyperparams["n_exp"], True)
+    mean_rand_pretrain_1000_pre_30, std_rand_pretrain_1000_pre_30 = process_on_policy_pretrain(rand_pretrain_cache, 30, hyperparams["n_episodes"], 1000, hyperparams["n_exp"], True)
+    mean_rand_pretrain_3000_pre_30, std_rand_pretrain_3000_pre_30 = process_on_policy_pretrain(rand_pretrain_cache, 30, hyperparams["n_episodes"], 3000, hyperparams["n_exp"], True)
+
+    mean_mix_7b_pre_10, std_mix_7b_pre_10 = processing_offline_online_data(Qwen_7B, cache10, 10, "finetune_7b", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_mix_32b_pre_10, std_mix_32b_pre_10 = processing_offline_online_data(Qwen_32B,  cache10, 10, "finetune_32b", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_pretrain_32b_1000_pre_10, std_pretrain_32b_1000_pre_10 = processing_offline_online_data(Qwen_32B, cache10, 10, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_pretrain_7b_1000_pre_10, std_pretrain_7b_1000_pre_10 = processing_offline_online_data(Qwen_7B, cache10, 10, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_pretrain_32b_3000_pre_10, std_pretrain_32b_3000_pre_10 = processing_offline_online_data(Qwen_32B, cache10, 10, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_pretrain_7b_3000_pre_10, std_pretrain_7b_3000_pre_10 = processing_offline_online_data(Qwen_7B, cache10, 10, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+    
+    mean_mix_7b_pre_20, std_mix_7b_pre_20 = processing_offline_online_data(Qwen_7B, cache20, 20, "finetune_7b", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_mix_32b_pre_20, std_mix_32b_pre_20 = processing_offline_online_data(Qwen_32B,  cache20, 20, "finetune_32b", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_pretrain_32b_1000_pre_20, std_pretrain_32b_1000_pre_20 = processing_offline_online_data(Qwen_32B, cache20, 20, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_pretrain_7b_1000_pre_20, std_pretrain_7b_1000_pre_20 = processing_offline_online_data(Qwen_7B, cache20, 20, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_pretrain_32b_3000_pre_20, std_pretrain_32b_3000_pre_20 = processing_offline_online_data(Qwen_32B, cache20, 20, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_pretrain_7b_3000_pre_20, std_pretrain_7b_3000_pre_20 = processing_offline_online_data(Qwen_7B, cache20, 20, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+
+    mean_mix_7b_pre_30, std_mix_7b_pre_30 = processing_offline_online_data(Qwen_7B, cache30, 30, "finetune_7b", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_mix_32b_pre_30, std_mix_32b_pre_30 = processing_offline_online_data(Qwen_32B,  cache30, 30, "finetune_32b", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_pretrain_32b_1000_pre_30, std_pretrain_32b_1000_pre_30 = processing_offline_online_data(Qwen_32B, cache30, 30, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_pretrain_7b_1000_pre_30, std_pretrain_7b_1000_pre_30 = processing_offline_online_data(Qwen_7B, cache30, 30, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_pretrain_32b_3000_pre_30, std_pretrain_32b_3000_pre_30 = processing_offline_online_data(Qwen_32B, cache30, 30, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_pretrain_7b_3000_pre_30, std_pretrain_7b_3000_pre_30 = processing_offline_online_data(Qwen_7B, cache30, 30, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
 
     for i in range(hyperparams["n_exp"]):
-        # online_returns[i] = cache10[f"online_{i}"]
-        online_returns[i] = cache10[f"online_{i}"][
-            : hyperparams["n_episodes"]
-        ]  # Quick-fix for MountainCar
-        on_pol_pretrain_1000_pre_10_returns[i] = np.squeeze(on_policy_pretrain_cache[
-            f"pretrain_10_eps_1000_steps_{i}"
-        ][: hyperparams["n_episodes"]])
-        on_pol_pretrain_3000_pre_10_returns[i] = np.squeeze(on_policy_pretrain_cache[
-            f"pretrain_10_eps_3000_steps_{i}"
-        ][: hyperparams["n_episodes"]])
-        on_pol_pretrain_1000_pre_20_returns[i] = np.squeeze(on_policy_pretrain_cache[
-            f"pretrain_20_eps_1000_steps_{i}"
-        ][: hyperparams["n_episodes"]])
-        on_pol_pretrain_3000_pre_20_returns[i] = np.squeeze(on_policy_pretrain_cache[
-            f"pretrain_20_eps_3000_steps_{i}"
-        ][: hyperparams["n_episodes"]])
-        on_pol_pretrain_1000_pre_30_returns[i] = np.squeeze(on_policy_pretrain_cache[
-            f"pretrain_30_eps_1000_steps_{i}"
-        ][: hyperparams["n_episodes"]])
-        on_pol_pretrain_3000_pre_30_returns[i] = np.squeeze(on_policy_pretrain_cache[
-            f"pretrain_30_eps_3000_steps_{i}"
-        ][: hyperparams["n_episodes"]])
-
-        rand_pretrain_1000_pre_10_returns[i] = np.squeeze(rand_pretrain_cache[
-            f"pretrain_10_eps_1000_steps_{i}_rand"
-        ][: hyperparams["n_episodes"]])
-        rand_pretrain_3000_pre_10_returns[i] = np.squeeze(rand_pretrain_cache[
-            f"pretrain_10_eps_3000_steps_{i}_rand"
-        ][: hyperparams["n_episodes"]])
-        rand_pretrain_1000_pre_20_returns[i] = np.squeeze(rand_pretrain_cache[
-            f"pretrain_20_eps_1000_steps_{i}_rand"
-        ][: hyperparams["n_episodes"]])
-        rand_pretrain_3000_pre_20_returns[i] = np.squeeze(rand_pretrain_cache[
-            f"pretrain_20_eps_3000_steps_{i}_rand"
-        ][: hyperparams["n_episodes"]])
-        rand_pretrain_1000_pre_30_returns[i] = np.squeeze(rand_pretrain_cache[
-            f"pretrain_30_eps_1000_steps_{i}_rand"
-        ][: hyperparams["n_episodes"]])
-        rand_pretrain_3000_pre_30_returns[i] = np.squeeze(rand_pretrain_cache[
-            f"pretrain_30_eps_3000_steps_{i}_rand"
-        ][: hyperparams["n_episodes"]])
-        for j in range(hyperparams["n_episodes"] - 10):
-            mix_7b_pre_10_returns[i][10 + j] = cache10[f"finetune_7b_{i}"][j]
-            mix_32b_pre_10_returns[i][10 + j] = cache10[f"finetune_32b_{i}"][j]
-            pretrain_7b_1000_pre_10_returns[i][10 + j] = cache10[
-                f"pretrain_7b_1000_{i}"
-            ][j]
-            pretrain_32b_1000_pre_10_returns[i][10 + j] = cache10[
-                f"pretrain_32b_1000_{i}"
-            ][j]
-            pretrain_7b_3000_pre_10_returns[i][10 + j] = cache10[
-                f"pretrain_7b_3000_{i}"
-            ][j]
-            pretrain_32b_3000_pre_10_returns[i][10 + j] = cache10[
-                f"pretrain_32b_3000_{i}"
-            ][j]
-
-        for j in range(hyperparams["n_episodes"] - 20):
-            mix_7b_pre_20_returns[i][20 + j] = cache20[f"finetune_7b_{i}"][j]
-            mix_32b_pre_20_returns[i][20 + j] = cache20[f"finetune_32b_{i}"][j]
-            pretrain_7b_1000_pre_20_returns[i][20 + j] = cache20[
-                f"pretrain_7b_1000_{i}"
-            ][j]
-            pretrain_32b_1000_pre_20_returns[i][20 + j] = cache20[
-                f"pretrain_32b_1000_{i}"
-            ][j]
-            pretrain_7b_3000_pre_20_returns[i][20 + j] = cache20[
-                f"pretrain_7b_3000_{i}"
-            ][j]
-            pretrain_32b_3000_pre_20_returns[i][20 + j] = cache20[
-                f"pretrain_32b_3000_{i}"
-            ][j]
-
-        for j in range(hyperparams["n_episodes"] - 30):
-            mix_7b_pre_30_returns[i][30 + j] = cache30[f"finetune_7b_{i}"][j]
-            mix_32b_pre_30_returns[i][30 + j] = cache30[f"finetune_32b_{i}"][j]
-            pretrain_7b_1000_pre_30_returns[i][30 + j] = cache30[
-                f"pretrain_7b_1000_{i}"
-            ][j]
-            pretrain_32b_1000_pre_30_returns[i][30 + j] = cache30[
-                f"pretrain_32b_1000_{i}"
-            ][j]
-            pretrain_7b_3000_pre_30_returns[i][30 + j] = cache30[
-                f"pretrain_7b_3000_{i}"
-            ][j]
-            pretrain_32b_3000_pre_30_returns[i][30 + j] = cache30[
-                f"pretrain_32b_3000_{i}"
-            ][j]
+        online_returns[i] = cache10[f"online_{i}"][: hyperparams["n_episodes"]]
 
     x = range(hyperparams["n_episodes"])
-
-    mean_mix_32b_pre_10 = np.mean(mix_32b_pre_10_returns, axis=0)
-    std_mix_32b_pre_10 = np.std(mix_32b_pre_10_returns, axis=0)
-    mean_mix_7b_pre_10 = np.mean(mix_7b_pre_10_returns, axis=0)
-    std_mix_7b_pre_10 = np.std(mix_7b_pre_10_returns, axis=0)
     mean_onl = np.mean(online_returns, axis=0)
     std_onl = np.std(online_returns, axis=0)
-    mean_pretrain_32b_1000_pre_10 = np.mean(pretrain_32b_1000_pre_10_returns, axis=0)
-    std_pretrain_32b_1000_pre_10 = np.std(pretrain_32b_1000_pre_10_returns, axis=0)
-    mean_pretrain_7b_1000_pre_10 = np.mean(pretrain_7b_1000_pre_10_returns, axis=0)
-    std_pretrain_7b_1000_pre_10 = np.std(pretrain_7b_1000_pre_10_returns, axis=0)
-    mean_pretrain_32b_3000_pre_10 = np.mean(pretrain_32b_3000_pre_10_returns, axis=0)
-    std_pretrain_32b_3000_pre_10 = np.std(pretrain_32b_3000_pre_10_returns, axis=0)
-    mean_pretrain_7b_3000_pre_10 = np.mean(pretrain_7b_3000_pre_10_returns, axis=0)
-    std_pretrain_7b_3000_pre_10 = np.std(pretrain_7b_3000_pre_10_returns, axis=0)
-    mean_on_pol_pretrain_1000_pre_10 = np.mean(
-        on_pol_pretrain_1000_pre_10_returns, axis=0
-    )
-    std_on_pol_pretrain_1000_pre_10 = np.std(
-        on_pol_pretrain_1000_pre_10_returns, axis=0
-    )
-    mean_on_pol_pretrain_3000_pre_10 = np.mean(
-        on_pol_pretrain_3000_pre_10_returns, axis=0
-    )
-    std_on_pol_pretrain_3000_pre_10 = np.std(
-        on_pol_pretrain_3000_pre_10_returns, axis=0
-    )
-    mean_rand_pretrain_1000_pre_10 = np.mean(rand_pretrain_1000_pre_10_returns, axis=0)
-    std_rand_pretrain_1000_pre_10 = np.std(rand_pretrain_1000_pre_10_returns, axis=0)
-    mean_rand_pretrain_3000_pre_10 = np.mean(rand_pretrain_3000_pre_10_returns, axis=0)
-    std_rand_pretrain_3000_pre_10 = np.std(rand_pretrain_3000_pre_10_returns, axis=0)
-
-    mean_mix_7b_pre_10[:10] = Qwen_7B[:10]
-    mean_mix_32b_pre_10[:10] = Qwen_32B[:10]
-    mean_pretrain_32b_1000_pre_10[:10] = Qwen_32B[:10]
-    mean_pretrain_7b_1000_pre_10[:10] = Qwen_7B[:10]
-    mean_pretrain_32b_3000_pre_10[:10] = Qwen_32B[:10]
-    mean_pretrain_7b_3000_pre_10[:10] = Qwen_7B[:10]
-
-    mean_mix_32b_pre_20 = np.mean(mix_32b_pre_20_returns, axis=0)
-    std_mix_32b_pre_20 = np.std(mix_32b_pre_20_returns, axis=0)
-    mean_mix_7b_pre_20 = np.mean(mix_7b_pre_20_returns, axis=0)
-    std_mix_7b_pre_20 = np.std(mix_7b_pre_20_returns, axis=0)
-    mean_pretrain_32b_1000_pre_20 = np.mean(pretrain_32b_1000_pre_20_returns, axis=0)
-    std_pretrain_32b_1000_pre_20 = np.std(pretrain_32b_1000_pre_20_returns, axis=0)
-    mean_pretrain_7b_1000_pre_20 = np.mean(pretrain_7b_1000_pre_20_returns, axis=0)
-    std_pretrain_7b_1000_pre_20 = np.std(pretrain_7b_1000_pre_20_returns, axis=0)
-    mean_pretrain_32b_3000_pre_20 = np.mean(pretrain_32b_3000_pre_20_returns, axis=0)
-    std_pretrain_32b_3000_pre_20 = np.std(pretrain_32b_3000_pre_20_returns, axis=0)
-    mean_pretrain_7b_3000_pre_20 = np.mean(pretrain_7b_3000_pre_20_returns, axis=0)
-    std_pretrain_7b_3000_pre_20 = np.std(pretrain_7b_3000_pre_20_returns, axis=0)
-    mean_on_pol_pretrain_1000_pre_20 = np.mean(
-        on_pol_pretrain_1000_pre_20_returns, axis=0
-    )
-    std_on_pol_pretrain_1000_pre_20 = np.std(
-        on_pol_pretrain_1000_pre_20_returns, axis=0
-    )
-    mean_on_pol_pretrain_3000_pre_20 = np.mean(
-        on_pol_pretrain_3000_pre_20_returns, axis=0
-    )
-    std_on_pol_pretrain_3000_pre_20 = np.std(
-        on_pol_pretrain_3000_pre_20_returns, axis=0
-    )
-    mean_rand_pretrain_1000_pre_20 = np.mean(rand_pretrain_1000_pre_20_returns, axis=0)
-    std_rand_pretrain_1000_pre_20 = np.std(rand_pretrain_1000_pre_20_returns, axis=0)
-    mean_rand_pretrain_3000_pre_20 = np.mean(rand_pretrain_3000_pre_20_returns, axis=0)
-    std_rand_pretrain_3000_pre_20 = np.std(rand_pretrain_3000_pre_20_returns, axis=0)
-
-    mean_mix_7b_pre_20[:20] = Qwen_7B[:20]
-    mean_mix_32b_pre_20[:20] = Qwen_32B[:20]
-    mean_pretrain_32b_1000_pre_20[:20] = Qwen_32B[:20]
-    mean_pretrain_7b_1000_pre_20[:20] = Qwen_7B[:20]
-    mean_pretrain_32b_3000_pre_20[:20] = Qwen_32B[:20]
-    mean_pretrain_7b_3000_pre_20[:20] = Qwen_7B[:20]
-
-    mean_mix_32b_pre_30 = np.mean(mix_32b_pre_30_returns, axis=0)
-    std_mix_32b_pre_30 = np.std(mix_32b_pre_30_returns, axis=0)
-    mean_mix_7b_pre_30 = np.mean(mix_7b_pre_30_returns, axis=0)
-    std_mix_7b_pre_30 = np.std(mix_7b_pre_30_returns, axis=0)
-    mean_pretrain_32b_1000_pre_30 = np.mean(pretrain_32b_1000_pre_30_returns, axis=0)
-    std_pretrain_32b_1000_pre_30 = np.std(pretrain_32b_1000_pre_30_returns, axis=0)
-    mean_pretrain_7b_1000_pre_30 = np.mean(pretrain_7b_1000_pre_30_returns, axis=0)
-    std_pretrain_7b_1000_pre_30 = np.std(pretrain_7b_1000_pre_30_returns, axis=0)
-    mean_pretrain_32b_3000_pre_30 = np.mean(pretrain_32b_3000_pre_30_returns, axis=0)
-    std_pretrain_32b_3000_pre_30 = np.std(pretrain_32b_3000_pre_30_returns, axis=0)
-    mean_pretrain_7b_3000_pre_30 = np.mean(pretrain_7b_3000_pre_30_returns, axis=0)
-    std_pretrain_7b_3000_pre_30 = np.std(pretrain_7b_3000_pre_30_returns, axis=0)
-    mean_on_pol_pretrain_1000_pre_30 = np.mean(
-        on_pol_pretrain_1000_pre_30_returns, axis=0
-    )
-    std_on_pol_pretrain_1000_pre_30 = np.std(
-        on_pol_pretrain_1000_pre_30_returns, axis=0
-    )
-    mean_on_pol_pretrain_3000_pre_30 = np.mean(
-        on_pol_pretrain_3000_pre_30_returns, axis=0
-    )
-    std_on_pol_pretrain_3000_pre_30 = np.std(
-        on_pol_pretrain_3000_pre_30_returns, axis=0
-    )
-    mean_rand_pretrain_1000_pre_30 = np.mean(rand_pretrain_1000_pre_30_returns, axis=0)
-    std_rand_pretrain_1000_pre_30 = np.std(rand_pretrain_1000_pre_30_returns, axis=0)
-    mean_rand_pretrain_3000_pre_30 = np.mean(rand_pretrain_3000_pre_30_returns, axis=0)
-    std_rand_pretrain_3000_pre_30 = np.std(rand_pretrain_3000_pre_30_returns, axis=0)
-
-    mean_mix_7b_pre_30[:30] = Qwen_7B[:30]
-    mean_mix_32b_pre_30[:30] = Qwen_32B[:30]
-    mean_pretrain_32b_1000_pre_30[:30] = Qwen_32B[:30]
-    mean_pretrain_7b_1000_pre_30[:30] = Qwen_7B[:30]
-    mean_pretrain_32b_3000_pre_30[:30] = Qwen_32B[:30]
-    mean_pretrain_7b_3000_pre_30[:30] = Qwen_7B[:30]
 
     out_dict = {
         "x": x,
@@ -720,8 +279,7 @@ def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, Qwen_7B_SFT, mea
     if hyperparams["env"] == "CliffWalking-v0" or hyperparams["env"] == "FrozenLake-v1":
         print("Environment is CliffWalking or FrozenLake. Extracting dataset for Transfer Coefficient calculation ...")
         for i in range(hyperparams["n_exp"]):
-            for n_eps, cache in [(30, cache30)]:
-            # for n_eps, cache in [(10, cache10), (20, cache20), (30, cache30)]:
+            for n_eps, cache in [(10, cache10), (20, cache20), (30, cache30)]:
                 out_dict[f"pretrain_7b_1000_{n_eps}_{i}_dataset"] = cache[f"pretrain_7b_1000_{i}_dataset"]
                 out_dict[f"pretrain_32b_1000_{n_eps}_{i}_dataset"] = cache[f"pretrain_32b_1000_{i}_dataset"]
                 out_dict[f"on_pol_1000_{n_eps}_{i}_dataset"] = on_policy_pretrain_cache[f"pretrain_{n_eps}_eps_1000_steps_{i}_dataset"]
@@ -1632,12 +1190,12 @@ def datasets_to_transfer_coef_upper_bound(dataset_online, dataset_offline, n_pre
     # print(f"online_coverage_dict: {online_coverage_dict}")
     return get_transfer_coef_upper_bound(prob_dict_online, prob_dict_offline)
 
-def plot_coverage_heatmap(dataset, n_pretrain_eps, h, model_name="Qwen 32B", figsize=(10, 8), cmap='Blues', annot=True, fmt='.4f', merge_time_step=False):
+def plot_coverage_heatmap(dataset, h=None, model_name="Qwen 32B", figsize=(10, 8), cmap='Blues', annot=True, fmt='.4f'):
     """
     Plot a heatmap of state-action coverage distribution.
     
     Args:
-        h: time step
+        h: time step. If None, uniform mixture of all time steps will be plotted
         dataset: dataset to plot the coverage heatmap
         model_name: Name of the model for the plot title
         figsize: Figure size as tuple (width, height)
@@ -1645,19 +1203,23 @@ def plot_coverage_heatmap(dataset, n_pretrain_eps, h, model_name="Qwen 32B", fig
         annot: Whether to show annotations on the heatmap
         fmt: Format string for annotations
     """
+    tmp_str = "" if h == None else f" - step {h}"
     #coverage_dict: Dictionary with time step 'h' as keys and coverage_dict[i] as values
-    #coverage_dict[i]: Dictionary with (state, action) tuples as keys and visit counts as values
-    coverage_dict = dataset_to_coverage_dict(dataset, n_pretrain_eps, merge_time_step) 
+    #coverage_dict[i]: Dictionary with (state, action) tuples as keys and visit counts as values 
+    coverage_dict = dataset_to_coverage_dict(dataset, len(dataset.episodes), merge_time_step=h is None)
+    if h is None:
+        h=0 #Default index for the mixture of all time steps distribution in coverage_dict
+    d = coverage_dict[h]
     # Normalize the coverage dictionary values to get probabilities
-    total_visits = sum(coverage_dict[h].values())
-    normalized_coverage = {key: value / total_visits for key, value in coverage_dict[h].items()}
+    total_visits = sum(d.values())
+    normalized_coverage = {key: value / total_visits for key, value in d.items()}
     
     print(f"Total visits: {total_visits}")
     print(f"Normalized coverage (first 5 entries): {dict(list(normalized_coverage.items())[:5])}")
     
     # Extract unique observations and actions
-    observations = sorted(list(set([key[0] for key in coverage_dict[h].keys()])))
-    actions = sorted(list(set([key[1] for key in coverage_dict[h].keys()])))
+    observations = sorted(list(set([key[0] for key in d.keys()])))
+    actions = sorted(list(set([key[1] for key in d.keys()])))
     # print(observations)
     # print(actions)
     
@@ -1683,14 +1245,14 @@ def plot_coverage_heatmap(dataset, n_pretrain_eps, h, model_name="Qwen 32B", fig
                 cmap=cmap,
                 cbar_kws={'label': 'Probability'})
     
-    plt.title(f'State-Action Coverage Distribution ({model_name} - step {h})')
+    plt.title(f'State-Action Coverage Distribution ({model_name}{tmp_str})')
     plt.xlabel('Action')
     plt.ylabel('State/Observation')
     plt.tight_layout()
     plt.show()
     
     # Print some statistics
-    print(f"Number of unique state-action pairs: {len(coverage_dict[h])}")
+    print(f"Number of unique state-action pairs: {len(d)}")
     print(f"Number of unique states: {len(observations)}")
     print(f"Number of unique actions: {len(actions)}")
     
@@ -1701,3 +1263,177 @@ def plot_coverage_heatmap(dataset, n_pretrain_eps, h, model_name="Qwen 32B", fig
     print("--------------------------------")
     
     return normalized_coverage, heatmap_matrix, observations, actions
+
+def plot_observation_traces(dataset, width, height, episode_indices=None, figsize=(12, 10), 
+                           line_colors=None, line_styles=None, alpha=0.7, 
+                           show_grid=True, show_episode_numbers=True, title="Observation Traces",
+                           linewidth=2, noise_std=0.1, fig=None, ax=None, name="", save_path=None):
+    """
+    Visualize the trace of observations from episodes as a grid with connected lines.
+    
+    Args:
+        dataset: Dataset containing episodes with observations
+        width: Width of the grid
+        height: Height of the grid
+        episode_indices: List of episode indices to plot. If None, plots all episodes
+        figsize: Figure size as tuple (width, height)
+        line_colors: List of colors for each episode line. If None, uses default colors
+        line_styles: List of line styles for each episode. If None, uses solid lines
+        alpha: Transparency of the lines
+        show_grid: Whether to show the grid lines
+        show_episode_numbers: Whether to show episode numbers in legend
+        title: Title for the plot
+        linewidth: Thickness of the trace lines
+        noise_std: Standard deviation of noise to add to coordinates (0 for no noise)
+        fig: Existing matplotlib figure object. If None, creates a new figure
+        ax: Existing matplotlib axes object. If None, creates new axes
+    
+    Returns:
+        fig: matplotlib figure object
+        ax: matplotlib axes object
+    """
+    
+    # Determine which episodes to plot
+    if episode_indices is None:
+        episode_indices = list(range(len(dataset.episodes)))
+    
+    # Set up colors and line styles
+    if line_colors is None:
+        # Use a color palette that works well for multiple episodes
+        colors = plt.cm.Set3(np.linspace(0, 1, len(episode_indices)))
+    else:
+        colors = line_colors
+    
+    if line_styles is None:
+        line_styles = ['-'] * len(episode_indices)
+    
+    # Create figure and axes if not provided
+    if fig is None or ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+        # Set up the grid only for new figures
+        ax.set_xlim(0, width)
+        ax.set_ylim(0, height)
+        ax.set_aspect('equal')
+    else:
+        # Use existing figure and axes
+        # Check if the axes limits need to be updated
+        current_xlim = ax.get_xlim()
+        current_ylim = ax.get_ylim()
+        new_xlim = (min(current_xlim[0], 0), max(current_xlim[1], width))
+        new_ylim = (min(current_ylim[0], 0), max(current_ylim[1], height))
+        ax.set_xlim(new_xlim)
+        ax.set_ylim(new_ylim)
+    
+    # Draw grid if requested
+    if show_grid:
+        for i in range(width + 1):
+            ax.axvline(x=i, color='gray', alpha=0.3, linewidth=0.5)
+        for i in range(height + 1):
+            ax.axhline(y=i, color='gray', alpha=0.3, linewidth=0.5)
+    
+    # Plot each episode trace
+    for idx, episode_idx in enumerate(episode_indices):
+        if episode_idx >= len(dataset.episodes):
+            print(f"Warning: Episode index {episode_idx} is out of range. Skipping.")
+            continue
+            
+        observations = dataset.episodes[episode_idx].observations
+        
+        # Convert observations to grid coordinates
+        x_coords = []
+        y_coords = []
+        
+        # Generate noise for this episode (same noise for all points in the episode)
+        if noise_std > 0:
+            episode_noise_x = np.random.normal(0, noise_std)
+            episode_noise_y = np.random.normal(0, noise_std)
+        else:
+            episode_noise_x = 0
+            episode_noise_y = 0
+        
+        for obs in observations:
+            # Handle different observation formats
+            if isinstance(obs, np.int64):
+                # Integer observation - convert to grid coordinates
+                grid_pos = obs
+                x = grid_pos % width
+                y = height - 1 - (grid_pos // width)  # Flip y-axis to match typical grid layout
+            elif isinstance(obs, np.ndarray):
+                # One-hot encoded observation - find the position
+                if len(obs) == width * height:  # Direct one-hot for grid
+                    grid_pos = np.argmax(obs)
+                    x = grid_pos % width
+                    y = height - 1 - (grid_pos // width)
+                else:
+                    # For other one-hot encodings, assume it represents a discrete state
+                    grid_pos = np.argmax(obs)
+                    x = grid_pos % width
+                    y = height - 1 - (grid_pos // width)
+            else:
+                print(f"Warning: Unknown observation format: {type(obs)}. Skipping.")
+                continue
+            
+            # Convert to cell center coordinates and add noise
+            x_center = x + 0.5 + episode_noise_x
+            y_center = y + 0.5 + episode_noise_y
+            
+            x_coords.append(x_center)
+            y_coords.append(y_center)
+        
+        if len(x_coords) > 0:
+            # Plot the trace line
+            label = f"Episode {episode_idx}" if show_episode_numbers else f"Trace {idx}"
+            ax.plot(x_coords, y_coords, 
+                   color=colors[idx % len(colors)], 
+                   linestyle=line_styles[idx % len(line_styles)],
+                   alpha=alpha, 
+                   linewidth=linewidth, 
+                #    label=label,
+                #    marker='o',
+                   markersize=4,
+                   markeredgecolor='black',
+                   markeredgewidth=0.5)
+            
+            # Mark start and end points
+            if len(x_coords) > 0:
+                # Start point (green)
+                ax.plot(x_coords[0], y_coords[0], 'o', 
+                       color=colors[0], markersize=8, label=f'{name} Start' if idx == 0 else "")
+                # End point (red)
+                ax.plot(x_coords[-1], y_coords[-1], '+', 
+                       color=colors[0], markersize=18, label=f'{name} End' if idx == 0 else "")
+    
+    # Customize the plot
+    if fig is None or ax is None:
+        ax.set_xlabel('Grid X Position')
+        ax.set_ylabel('Grid Y Position')
+    
+    # Always set the title
+    ax.set_title(title)
+    
+    # Set tick labels to show grid positions (always update for proper grid display)
+    ax.set_xticks(range(width))
+    ax.set_yticks(range(height))
+    ax.set_xticklabels(range(width))
+    ax.set_yticklabels(range(height))
+    
+    # Disable the default grid to avoid center values
+    ax.grid(False)
+    
+    # Add legend (only for new figures)
+    # if len(episode_indices) > 1 and (fig is None or ax is None):
+    #     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    # Apply tight_layout only for new figures
+    # if fig is None or ax is None:
+    #     plt.tight_layout()
+    if save_path is not None:
+        plt.savefig(
+            save_path,
+            format="pdf",
+            bbox_inches="tight",
+            pad_inches=0.1,
+        )
+    
+    return fig, ax

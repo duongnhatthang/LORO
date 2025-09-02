@@ -9,6 +9,7 @@ from env.atari.represented_atari_game import GymCompatWrapper2
 from d3rlpy.metrics import EnvironmentEvaluator
 
 from online_main import OneHotWrapper, evaluate_qlearning_with_environment
+from vis_utils import reformat_on_policy_pretrain_cache
 
 
 def online_training_split(env, eval_env, hyperparams, explorer=None):
@@ -27,17 +28,17 @@ def online_training_split(env, eval_env, hyperparams, explorer=None):
     dqn = algo_config.create(device=hyperparams["gpu"])
 
     # Initialize empty FIFO buffer
-    buffer = d3rlpy.dataset.ReplayBuffer(
+    temp_buffer = d3rlpy.dataset.ReplayBuffer(
         buffer=d3rlpy.dataset.FIFOBuffer(limit=hyperparams["buffer_size"]),
         env=env,
     )
 
-    rewards = []
+    eps_rewards = []
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     for _ in trange(hyperparams["n_pretrain_eps"]):
         dqn.fit_online(
             env=env,
-            buffer=buffer,
+            buffer=temp_buffer,
             explorer=explorer,
             n_steps=hyperparams["max_episode_len"],
             experiment_name=f"{timestamp}_online_training",
@@ -49,18 +50,29 @@ def online_training_split(env, eval_env, hyperparams, explorer=None):
         else:
             env_evaluator = EnvironmentEvaluator(env, n_trials=1)
             r = env_evaluator(dqn, dataset=None)
-        rewards.append(r)
+        eps_rewards.append(r)
+        # break if we have collected enough offline data. If not, the buffer will collect hyperparams["n_pretrain_eps"]*hyperparams["max_episode_len"] transitions
+        if len(temp_buffer.episodes) >= hyperparams["n_pretrain_eps"]:
+            break
 
-    dqn.fit(
-        buffer,
-        n_steps=hyperparams["n_pretrain_steps"],
-        n_steps_per_epoch=hyperparams["n_steps_per_epoch"],
+    # Truncate the buffer to the size of hyperparams["n_pretrain_eps"]
+    buffer = d3rlpy.dataset.ReplayBuffer(
+        buffer=d3rlpy.dataset.FIFOBuffer(limit=hyperparams["buffer_size"]),
+        env=env,
     )
+    for episode in temp_buffer.episodes:
+        if len(episode) > 0 and hasattr(episode, "rewards"):
+            buffer.append_episode(episode)
+        else:
+            print(f"Skipping invalid episode: {episode}")
+        if len(buffer.episodes) >= hyperparams["n_pretrain_eps"]:
+            break
     # Convert the ReplayBuffer to an MDPDataset by extracting data manually
     # Since ReplayBuffer doesn't have to_mdp_dataset(), we need to create it manually
     observations, actions, rewards, terminals = [], [], [], []
     
     # Extract data from the buffer's episodes
+    #TODO: .extend here stores list of of np.array. May need to fix this
     if hasattr(buffer, 'episodes') and len(buffer.episodes) > 0 and buffer.transition_count > 0:
         for episode in buffer.episodes:
             if len(episode) > 0 and hasattr(episode, "rewards"):
@@ -87,6 +99,12 @@ def online_training_split(env, eval_env, hyperparams, explorer=None):
             terminals=np.array([]),
         )
 
+    dqn.fit(
+        buffer,
+        n_steps=hyperparams["n_pretrain_steps"],
+        n_steps_per_epoch=hyperparams["n_steps_per_epoch"],
+    )
+
     for _ in trange(hyperparams["n_online_eps"]):
         dqn.fit_online(
             env=env,
@@ -102,13 +120,13 @@ def online_training_split(env, eval_env, hyperparams, explorer=None):
         else:
             env_evaluator = EnvironmentEvaluator(env, n_trials=1)
             r = env_evaluator(dqn, dataset=None)
-        rewards.append(r)
+        eps_rewards.append(r)
     
     # Evaluate the final policy on the evaluation environment
     _, dataset = evaluate_qlearning_with_environment(
         dqn, eval_env, hyperparams["max_episode_len"]
     )
-    return rewards, dataset, offline_dataset
+    return eps_rewards, dataset, offline_dataset
 
 
 def online_training_rand(env, eval_env, hyperparams, explorer=None):
@@ -135,7 +153,7 @@ def online_training_rand(env, eval_env, hyperparams, explorer=None):
         env=env,
     )
 
-    rewards = []
+    eps_rewards = []
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     observations, actions, pretrain_rewards, terminals = [], [], [], []
     for _ in range(hyperparams["n_pretrain_eps"]):
@@ -154,7 +172,7 @@ def online_training_rand(env, eval_env, hyperparams, explorer=None):
             terminals.append(int(done))
             eps_reward += reward
             count += 1
-        rewards.append(eps_reward)
+        eps_rewards.append(eps_reward)
     pretrain_dataset = d3rlpy.dataset.MDPDataset(
         observations=np.array(observations),
         actions=np.array(actions),
@@ -188,25 +206,25 @@ def online_training_rand(env, eval_env, hyperparams, explorer=None):
         else:
             env_evaluator = EnvironmentEvaluator(env, n_trials=1)
             r = env_evaluator(dqn, dataset=None)
-        rewards.append(r)
+        eps_rewards.append(r)
     
     # Evaluate the final policy on the evaluation environment
     _, dataset = evaluate_qlearning_with_environment(
         dqn, eval_env, hyperparams["max_episode_len"]
     )
-    return rewards, dataset, pretrain_dataset
+    return eps_rewards, dataset, pretrain_dataset
 
 
 if __name__ == "__main__":
     hyperparams = {
-        "env": "FrozenLake-v1",  # "CartPole-v0", "MountainCar-v0", "FrozenLake-v1", "CliffWalking-v0", "RepresentedPong-v0"
+        "env": "RepresentedPong-v0",  # "CartPole-v0", "MountainCar-v0", "FrozenLake-v1", "CliffWalking-v0", "RepresentedPong-v0"
+        "n_episodes": 200,  # Keep this here to use in the run_exp_rand and run_exp_split functions
+        # "n_online_eps": 170,  # 10-5990 for mountainCar, 30-120 for CartPole, 30-120 for FrozenLake
+        # "n_pretrain_eps": 30,
         "seed": 42069,
-        "n_episodes": 150,  # Keep this here to use in the run_exp_rand and run_exp_split functions
         "max_episode_len": 200,  # Around 10h per 100k steps in Leviathan server
         "eps": 0.1,  # epsilon for exploration
         "n_exp": 5,
-        "n_pretrain_eps": 30,
-        "n_online_eps": 120,  # 10-5990 for mountainCar, 30-120 for CartPole, 30-120 for FrozenLake
         "gpu": True,  # True if use GPU to train with d3rlpy
         "buffer_size": 100000,  # Test with 100k, 200k, 500k. 1M might be too much
         "data_path": None,  #'data/CartPole_Qwen2.5-7B-Instruct_Neps_10_20250406040150.pkl',
@@ -218,10 +236,6 @@ if __name__ == "__main__":
         "n_steps_per_epoch": 200,
         "n_pretrain_steps": 1000,
     }
-    assert (
-        hyperparams["n_episodes"]
-        == hyperparams["n_pretrain_eps"] + hyperparams["n_online_eps"]
-    ), "Check n_episodes=n_pretrain_eps+n_online_eps"
 
     # d3rlpy supports both Gym and Gymnasium
     if "Represented" in hyperparams["env"]:
@@ -268,8 +282,8 @@ if __name__ == "__main__":
     def run_exp_split(
         n_pretrain_steps, n_pretrain_eps, cache, env, eval_env, hyperparams, explorer
     ):
-        hyperparams["n_pretrain_steps"] = n_pretrain_steps
-        hyperparams["n_pretrain_eps"] = n_pretrain_eps
+        hyperparams["n_pretrain_steps"] = n_pretrain_steps # pretrain steps on offline dataset (not collecting new data)
+        hyperparams["n_pretrain_eps"] = n_pretrain_eps # offline dataset collection
         hyperparams["n_online_eps"] = (
             hyperparams["n_episodes"] - hyperparams["n_pretrain_eps"]
         )
