@@ -254,11 +254,32 @@ def rollout(agent, env, hyperparams):
     return dataset
 
 if __name__ == "__main__":
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="LORO Training Script")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-7B-Instruct",
+                        help="Model name to use for training") #"deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+    parser.add_argument("--env", type=str, default="CliffWalking-v0",
+                        help="Environment to train on") # "CartPole-v0", "MountainCar-v0", "FrozenLake-v1", "CliffWalking-v0", Pendulum-v1, "Taxi-v3", "RepresentedPong-v0"
+    parser.add_argument("--n_episodes", type=int, default=30,
+                        help="Number of episodes to run")
+    parser.add_argument("--max_episode_len", type=int, default=200,
+                        help="Maximum episode length")
+    parser.add_argument("--SFT", action="store_true", default=False,
+                        help="Whether to use supervised fine-tuning")
+    parser.add_argument("--seed", type=int, default=42069,
+                        help="Random seed for reproducibility")
+    parser.add_argument("--batch_size", type=int, default=1,
+                        help="Batch size for training")
+    parser.add_argument("--eps", type=float, default=0.0,
+                        help="Epsilon for exploration")
+    parser.add_argument("--load_in_8bit", action="store_true", default=True,
+                        help="Whether to load model in 8-bit")
+    
+    args = parser.parse_args()
+    
     hyperparams = {
-        # "model_name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-        # "model_name": "Qwen/QwQ-32B",
-        "model_name": "Qwen/Qwen2.5-7B-Instruct",
-        "env": "CliffWalking-v0",  # "CartPole-v0", # "Acrobot-v0", "MountainCar-v0", "FrozenLake-v1", "CliffWalking-v0", Pendulum-v1, "Taxi-v3", "RepresentedPong-v0"
+        "model_name": args.model_name,
+        "env": args.env,
         "lora/target_modules": [
             "q_proj",
             "up_proj",
@@ -273,18 +294,18 @@ if __name__ == "__main__":
         "lora/lora_dropout": 0.05,
         "lora/bias": "none",
         "lora/task_type": "CAUSAL_LM",
-        "load_in_8bit": True,
-        "batch_size": 1,
-        "seed": 42069,
-        "n_episodes": 30,  # 5000, #CartPole: 50m for 1 eps (length 39) for 32B, 36m (31 steps) for 7B, 15-25 steps for rand. Pong: 5.5h for 1 episode (500 length) on 7B with CoT, 9h for 32B
+        "load_in_8bit": args.load_in_8bit,
+        "batch_size": args.batch_size,
+        "seed": args.seed,
+        "n_episodes": args.n_episodes,
         "generate/max_new_tokens": 2000,
         "generate/do_sample": True,
         "generate/top_p": 0.6,
         "generate/top_k": 0,
         "generate/temperature": 0.9,
-        "max_episode_len": 200,  # 200 for CartPole-v0, 500 for Pong, 200 for MountainCar (optimal 110), 50 for Pendulum
-        "eps": 0.0,  # 0.01,  # epsilon for exploration
-        "SFT": False,
+        "max_episode_len": args.max_episode_len,
+        "eps": args.eps,
+        "SFT": args.SFT,
     }
     # wandb_run = wandb.init(project=os.environ.get("WANDB_PROJECT"), config=hyperparams)
     device = "cuda"
