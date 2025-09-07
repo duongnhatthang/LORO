@@ -1,4 +1,6 @@
 import os
+import time
+import json
 from tqdm import trange
 from datetime import datetime
 import argparse
@@ -200,6 +202,37 @@ def get_agent(model, tokenizer, device, hyperparams):
         ), f"Environment {hyperparams['env']} is not supported. Please provide a valid environment."
     return agent
 
+def llm_write_timing_log(rollout_time, hyperparams, timestamp):
+    """
+    Write timing information and hyperparameters to a log file with timestamp.
+    
+    Args:
+        rollout_time (float): Time taken for rollout in seconds
+        hyperparams (dict): Dictionary containing hyperparameters
+        timestamp (str): Timestamp string for unique file naming
+    """
+    # Create logs directory if it doesn't exist
+    os.makedirs("logs", exist_ok=True)
+    
+    # Create log data
+    log_data = {
+        "timestamp": timestamp,
+        "rollout_time_seconds": rollout_time,
+        "rollout_time_minutes": rollout_time / 60.0,
+        "rollout_time_hours": rollout_time / 3600.0,
+        "hyperparameters": hyperparams
+    }
+    
+    # Create unique log filename with timestamp
+    log_filename = f"logs/llm_timing_log_{timestamp}.json"
+    
+    # Write to log file
+    with open(log_filename, "w") as f:
+        json.dump(log_data, f, indent=2)
+    
+    print(f"Timing log written to: {log_filename}")
+    print(f"Rollout completed in {rollout_time:.2f} seconds ({rollout_time/60:.2f} minutes)")
+
 def rollout(agent, env, hyperparams):
     d3rlpy.seed(hyperparams["seed"])
     d3rlpy.envs.seed_env(env, hyperparams["seed"])
@@ -334,8 +367,18 @@ if __name__ == "__main__":
     else:
         env = GymCompatWrapper(gym.make(hyperparams["env"]))
 
-    dataset = rollout(agent, env, hyperparams)
+    # Generate timestamp for unique file naming
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    
+    # Time the rollout process
+    print("Starting rollout...")
+    start_time = time.time()
+    dataset = rollout(agent, env, hyperparams)
+    end_time = time.time()
+    rollout_time = end_time - start_time
+    
+    # Write timing log
+    llm_write_timing_log(rollout_time, hyperparams, timestamp)
     if hyperparams["SFT"]:
         is_SFT = "SFT"
     else:
@@ -347,8 +390,8 @@ if __name__ == "__main__":
         + hyperparams["model_name"].split("/")[-1]
         + "_Neps_"
         + str(hyperparams["n_episodes"])
-        + "_"
-        + timestamp
+        # + "_" # Comment out timestamp to standardize the data path. Use this for debug if needed.
+        # + timestamp
         + is_SFT
         + ".pkl",
         "wb",
