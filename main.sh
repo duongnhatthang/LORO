@@ -26,6 +26,7 @@ TARGET_UPDATE_INTERVAL=1000
 N_PRETRAIN_STEPS=1000
 PRETRAINING_EXP=false
 LONG_COT=false
+AWAC=false
 
 # Function to display usage
 usage() {
@@ -52,6 +53,7 @@ usage() {
     echo "  --n_pretrain_steps N         Number of pretraining steps (default: $N_PRETRAIN_STEPS)"
     echo "  --pretraining_exp            Run pretraining experiments (default: false)"
     echo "  --long_cot                   Use DeepSeek long CoT data paths (default: false)"
+    echo "  --awac                       Use AWAC model instead of SAC or DoubleDQN (default: false)"
     echo "  --help                       Show this help message"
     echo ""
     echo "Examples:"
@@ -143,6 +145,10 @@ while [[ $# -gt 0 ]]; do
             LONG_COT=true
             shift
             ;;
+        --awac)
+            AWAC=true
+            shift
+            ;;
         --help)
             usage
             exit 0
@@ -170,6 +176,7 @@ echo "Pretrain Episodes: $N_PRETRAIN_EPS"
 echo "Seed: $SEED"
 echo "SFT: $SFT"
 echo "GPU: $GPU"
+echo "AWAC: $AWAC"
 echo "=========================================="
 
 # Build arguments for llm_main.py
@@ -194,6 +201,9 @@ if [ "$PRETRAINING_EXP" = true ]; then
 fi
 if [ "$LONG_COT" = true ]; then
     ONLINE_ARGS="$ONLINE_ARGS --long_cot"
+fi
+if [ "$AWAC" = true ]; then
+    ONLINE_ARGS="$ONLINE_ARGS --awac"
 fi
 
 # Step 1: Run LLM training

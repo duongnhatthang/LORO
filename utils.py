@@ -187,19 +187,26 @@ def truncate_dataset(dataset, n_eps, env_name):
     return dataset_new
 
 
-def create_d3rlpy_model(env_name, batch_size, learning_rate, gamma, target_update_interval, gpu):
-    # Determine the algorithm based on the action space
-    if isinstance(
-        gym.make(env_name).action_space, gym.spaces.Box
-    ):  # Continuous action space
-        model = d3rlpy.algos.SACConfig(
+def create_d3rlpy_model(env_name, batch_size, learning_rate, gamma, target_update_interval, gpu, awac=False):
+    if not awac:
+        # Determine the algorithm based on the action space
+        if isinstance(
+            gym.make(env_name).action_space, gym.spaces.Box
+        ):  # Continuous action space
+            model = d3rlpy.algos.SACConfig(
+                batch_size=batch_size,
+                gamma=gamma,
+            ).create(device=gpu)
+        else:  # Discrete action space
+            model = d3rlpy.algos.DoubleDQNConfig(
+                batch_size=batch_size,
+                learning_rate=learning_rate,
+                gamma=gamma,
+                target_update_interval=target_update_interval,
+            ).create(device=gpu)
+    else:
+        model = d3rlpy.algos.AWACConfig(
             batch_size=batch_size,
-            gamma=gamma,
-        ).create(device=gpu)
-    else:  # Discrete action space
-        model = d3rlpy.algos.DoubleDQNConfig(
-            batch_size=batch_size,
-            learning_rate=learning_rate,
             gamma=gamma,
             target_update_interval=target_update_interval,
         ).create(device=gpu)
@@ -222,7 +229,7 @@ def pretrain_from_llm(dataset_path, hyperparams, model_size, suffix):
         dataset = pickle.load(file)
     dataset_new = truncate_dataset(dataset, hyperparams["n_pretrain_eps"], hyperparams["env"])
 
-    model = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"])
+    model = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
     # start offline training
     model.fit(
         dataset_new,

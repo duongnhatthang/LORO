@@ -60,7 +60,7 @@ def buffer_to_dataset(temp_buffer, buffer_size, n_pretrain_eps, env):
     return offline_dataset, buffer
 
 def online_training_with_pretrain(hyperparams, explorer, seed, n_pretrain_steps, n_pretrain_eps, n_online_eps):
-    dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"])
+    dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
     tmp_env, _ = get_env_and_eval_env(hyperparams["env"], seed)
     # Initialize empty FIFO buffer
     temp_buffer = d3rlpy.dataset.ReplayBuffer(
@@ -173,7 +173,7 @@ def online_training_rand(hyperparams, explorer, seed, n_pretrain_steps, n_pretra
     """
     Same as online_training_with_pretrain, but with random actions for the first n_pretrain_eps episodes.
     """
-    dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"])
+    dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
     random_policy = create_random_model(hyperparams["env"], hyperparams["gpu"])
 
     tmp_env, _ = get_env_and_eval_env(hyperparams["env"], seed)
@@ -309,6 +309,7 @@ if __name__ == "__main__":
         "target_update_interval": 1000,  # Test with 1k, 2k, 5k
         "n_steps_per_epoch": 200,
         # "n_pretrain_steps": 1000,
+        "awac": False,
     }
 
     # setup explorers

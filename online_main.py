@@ -12,7 +12,7 @@ from utils import *
 
 
 def online_training_with_pretrain(hyperparams, explorer, seed, n_pretrain_steps, n_pretrain_eps, n_online_eps):
-    dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"])
+    dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
     tmp_env, _ = get_env_and_eval_env(hyperparams["env"], seed)
     # Initialize empty FIFO buffer
     temp_buffer = d3rlpy.dataset.ReplayBuffer(
@@ -37,7 +37,7 @@ def online_training_rand(hyperparams, explorer, seed, n_pretrain_steps, n_pretra
     """
     Same as online_training_with_pretrain, but with random actions for the first n_pretrain_eps episodes.
     """
-    dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"])
+    dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
     random_policy = create_random_model(hyperparams["env"], hyperparams["gpu"])
 
     tmp_env, _ = get_env_and_eval_env(hyperparams["env"], seed)
@@ -140,7 +140,7 @@ def _online_training_from_scratch(hyperparams, explorer, cache):
     # assert hyperparams["data_path"] is None, "data_path should be None when training from scratch"
     # assert hyperparams["n_pretrain_eps"] > 0, "n_pretrain_eps should be larger than 0 when training from scratch"
     tmp_env, _ = get_env_and_eval_env(hyperparams["env"], hyperparams["seed"]) # just use tmp_env to initialize the buffer
-    model = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"])
+    model = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
     # Initialize empty FIFO buffer
     buffer = d3rlpy.dataset.ReplayBuffer(
         buffer=d3rlpy.dataset.FIFOBuffer(limit=hyperparams["buffer_size"]),
@@ -157,7 +157,7 @@ def _online_training_with_mixed_pretraining_data(hyperparams, explorer, cache):
     # assert hyperparams["data_path"] is not None, "data_path should not be None when training with mixed pretraining data"
     # assert hyperparams["n_pretrain_eps"] > 0, "n_pretrain_eps should be larger than 0 when training with mixed pretraining data"
     tmp_env, _ = get_env_and_eval_env(hyperparams["env"], hyperparams["seed"]) # just use tmp_env to initialize the buffer
-    model = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"])
+    model = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
 
     # Initialize empty FIFO buffer
     buffer = d3rlpy.dataset.ReplayBuffer(
@@ -230,6 +230,8 @@ if __name__ == "__main__":
                        help="Number of pretraining steps")
     parser.add_argument("--pretraining_exp", action="store_true", default=False,
                        help="Run pretraining experiments (run_exp_and_save calls)")
+    parser.add_argument("--awac", action="store_true", default=False,
+                       help="Using AWAC model")
     
     args = parser.parse_args()
     
@@ -251,6 +253,7 @@ if __name__ == "__main__":
         "long_cot": args.long_cot,
         "n_pretrain_steps": args.n_pretrain_steps,
         "pretraining_exp": args.pretraining_exp,
+        "awac": args.awac,
     }
 
     # setup explorers
