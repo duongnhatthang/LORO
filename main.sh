@@ -185,7 +185,9 @@ if [ "$SFT" = true ]; then
     LLM_ARGS="$LLM_ARGS --SFT"
 fi
 if [ "$LOAD_IN_8BIT" = true ]; then
-    LLM_ARGS="$LLM_ARGS --load_in_8bit"
+    LLM_ARGS="$LLM_ARGS --load_in_8bit true"
+else
+    LLM_ARGS="$LLM_ARGS --load_in_8bit false"
 fi
 
 # Build arguments for online_main.py

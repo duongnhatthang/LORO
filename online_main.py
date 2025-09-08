@@ -132,7 +132,7 @@ def _online_training_from_pretrained_model(hyperparams, explorer, cache, model_s
 
     n_rollouts = hyperparams["n_online_eps"] # Only rollout for n_online_eps since the model was pretrained on n_pretrain_eps
     for i in range(hyperparams["n_exp"]):
-        cache[f"pretrain_{model_size}_{hyperparams["n_pretrain_steps"]}_{i}"], cache[f"pretrain_{model_size}_{hyperparams["n_pretrain_steps"]}_{i}_dataset"], _ = rollout_and_eval(hyperparams["max_episode_len"], hyperparams["env"], explorer, model, buffer, n_rollouts, hyperparams["seed"]+i)
+        cache[f"pretrain_{model_size}_{hyperparams['n_pretrain_steps']}_{i}"], cache[f"pretrain_{model_size}_{hyperparams['n_pretrain_steps']}_{i}_dataset"], _ = rollout_and_eval(hyperparams["max_episode_len"], hyperparams["env"], explorer, model, buffer, n_rollouts, hyperparams["seed"]+i)
     return cache
 
 

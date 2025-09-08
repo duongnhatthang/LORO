@@ -13,6 +13,7 @@ import gymnasium as gym
 import numpy as np
 import d3rlpy
 import pickle
+import torch
 
 from env.translation_agent import SpaceInvadersAgent, PongAgent
 from env import classic_control, toy_text, translation_agent
@@ -23,20 +24,13 @@ def get_agent(model, tokenizer, device, hyperparams):
     """
     Returns an instance of the Agent with the provided model, tokenizer, device, and hyperparameters.
     """
-    parser = argparse.ArgumentParser(description="Place holder args to init stuff.")
-    parser.add_argument(
-        "--is_only_local_obs",
-        type=int,
-        default=1,
-        help="Whether only taking local observations, if is_only_local_obs = 1, only using local obs",
-    )
-    parser.add_argument(
-        "--max_episode_len",
-        type=int,
-        default=hyperparams["max_episode_len"],
-        help="The maximum number of steps in an episode",
-    )
-    args = parser.parse_args()
+    # Create a simple args object with the required values instead of parsing command line
+    class Args:
+        def __init__(self):
+            self.is_only_local_obs = 1
+            self.max_episode_len = hyperparams["max_episode_len"]
+    
+    args = Args()
     # Create the agent with the specified parameters
     if hyperparams["env"] == "RepresentedSpaceInvaders-v0":
         print("Creating SpaceInvadersAgent")
@@ -305,8 +299,8 @@ if __name__ == "__main__":
                         help="Batch size for training")
     parser.add_argument("--eps", type=float, default=0.0,
                         help="Epsilon for exploration")
-    parser.add_argument("--load_in_8bit", action="store_true", default=True,
-                        help="Whether to load model in 8-bit")
+    parser.add_argument("--load_in_8bit", type=str, default="false", choices=["true", "false"],
+                        help="Whether to load model in 8-bit (true/false)")
     
     args = parser.parse_args()
     
@@ -327,7 +321,7 @@ if __name__ == "__main__":
         "lora/lora_dropout": 0.05,
         "lora/bias": "none",
         "lora/task_type": "CAUSAL_LM",
-        "load_in_8bit": args.load_in_8bit,
+        "load_in_8bit": args.load_in_8bit.lower() == "true",
         "batch_size": args.batch_size,
         "seed": args.seed,
         "n_episodes": args.n_episodes,
@@ -351,12 +345,29 @@ if __name__ == "__main__":
             if key.startswith("lora/")
         }
     )
-    model = AutoModelForCausalLMWithValueHead.from_pretrained(
-        pretrained_model_name_or_path=hyperparams["model_name"],
-        peft_config=lora_config,
-        load_in_8bit=hyperparams["load_in_8bit"],
-        token=HF_TOKEN,
-    ).to(device)
+    try:
+        model = AutoModelForCausalLMWithValueHead.from_pretrained(
+            pretrained_model_name_or_path=hyperparams["model_name"],
+            peft_config=lora_config,
+            load_in_8bit=hyperparams["load_in_8bit"],
+            token=HF_TOKEN,
+        ).to(device)
+    except Exception as e:
+        print(f"Error loading model with 8-bit quantization: {e}")
+        print("Falling back to loading without 8-bit quantization...")
+        model = AutoModelForCausalLMWithValueHead.from_pretrained(
+            pretrained_model_name_or_path=hyperparams["model_name"],
+            peft_config=lora_config,
+            load_in_8bit=False,
+            token=HF_TOKEN,
+        ).to(device)
+    
+    # Clear GPU cache and print memory info
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+        print(f"GPU memory cached: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+    
     tokenizer = AutoTokenizer.from_pretrained(hyperparams["model_name"], token=HF_TOKEN)
     tokenizer.add_special_tokens({"pad_token": "<pad>"})
     model.pretrained_model.resize_token_embeddings(len(tokenizer))
