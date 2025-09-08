@@ -5,7 +5,7 @@ from tqdm import trange
 from datetime import datetime
 import argparse
 
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, BitsAndBytesConfig
 from peft import LoraConfig
 from trl import AutoModelForCausalLMWithValueHead
 
@@ -47,6 +47,7 @@ def get_agent(model, tokenizer, device, hyperparams):
                 "batch_size": hyperparams["batch_size"],
                 "mini_batch_size": hyperparams["batch_size"],
             },
+            is_sft=hyperparams["SFT"],
         )
     elif hyperparams["env"] == "RepresentedPong-v0":
         print("Creating PongAgent")
@@ -63,6 +64,7 @@ def get_agent(model, tokenizer, device, hyperparams):
                 "batch_size": hyperparams["batch_size"],
                 "mini_batch_size": hyperparams["batch_size"],
             },
+            is_sft=hyperparams["SFT"],
         )
     elif hyperparams["env"] == "CartPole-v0":
         print("Creating PongAgent")
@@ -81,6 +83,7 @@ def get_agent(model, tokenizer, device, hyperparams):
             },
             obs_translator=classic_control.cartpole_translator.ObsTranslator(),
             game_describer=classic_control.cartpole_translator.GameDescriber(args),
+            is_sft=hyperparams["SFT"],
         )
     elif hyperparams["env"] == "Acrobot-v0":
         print("Creating AcrobotAgent")
@@ -99,6 +102,7 @@ def get_agent(model, tokenizer, device, hyperparams):
             },
             obs_translator=classic_control.acrobot_translator.ObsTranslator(),
             game_describer=classic_control.acrobot_translator.GameDescriber(args),
+            is_sft=hyperparams["SFT"],
         )
     elif hyperparams["env"] == "MountainCar-v0":
         print("Creating MountainCarAgent")
@@ -117,6 +121,7 @@ def get_agent(model, tokenizer, device, hyperparams):
             },
             obs_translator=classic_control.mountaincar_translator.ObsTranslator(),
             game_describer=classic_control.mountaincar_translator.GameDescriber(args),
+            is_sft=hyperparams["SFT"],
         )
     elif hyperparams["env"] == "FrozenLake-v1":
         print("Creating FrozenLakeAgent")
@@ -135,6 +140,7 @@ def get_agent(model, tokenizer, device, hyperparams):
             },
             obs_translator=toy_text.frozenlake_translator.ObsTranslator(),
             game_describer=toy_text.frozenlake_translator.GameDescriber(args),
+            is_sft=hyperparams["SFT"],
         )
     elif hyperparams["env"] == "CliffWalking-v0":
         print("Creating CliffWalkingAgent")
@@ -153,6 +159,7 @@ def get_agent(model, tokenizer, device, hyperparams):
             },
             obs_translator=toy_text.cliffwalking_translator.ObsTranslator(),
             game_describer=toy_text.cliffwalking_translator.GameDescriber(args),
+            is_sft=hyperparams["SFT"],
         )
     elif hyperparams["env"] == "Taxi-v3":
         print("Creating TaxiAgent")
@@ -171,6 +178,7 @@ def get_agent(model, tokenizer, device, hyperparams):
             },
             obs_translator=toy_text.taxi_translator.ObsTranslator(),
             game_describer=toy_text.taxi_translator.GameDescriber(args),
+            is_sft=hyperparams["SFT"],
         )
     elif hyperparams["env"] == "Pendulum-v1":
         print("Creating PendulumAgent")
@@ -189,6 +197,7 @@ def get_agent(model, tokenizer, device, hyperparams):
             },
             obs_translator=classic_control.pendulum_translator.ObsTranslator(),
             game_describer=classic_control.pendulum_translator.GameDescriber(args),
+            is_sft=hyperparams["SFT"],
         )
     else:
         assert (
@@ -300,7 +309,9 @@ if __name__ == "__main__":
     parser.add_argument("--eps", type=float, default=0.0,
                         help="Epsilon for exploration")
     parser.add_argument("--load_in_8bit", type=str, default="false", choices=["true", "false"],
-                        help="Whether to load model in 8-bit (true/false)")
+                        help="Whether to load model in 8-bit (true/false) - DEPRECATED, use --quantization instead")
+    parser.add_argument("--quantization", type=str, default="none", choices=["none", "4bit", "8bit"],
+                        help="Quantization method: none, 4bit, or 8bit")
     
     args = parser.parse_args()
     
@@ -322,6 +333,7 @@ if __name__ == "__main__":
         "lora/bias": "none",
         "lora/task_type": "CAUSAL_LM",
         "load_in_8bit": args.load_in_8bit.lower() == "true",
+        "quantization": args.quantization,
         "batch_size": args.batch_size,
         "seed": args.seed,
         "n_episodes": args.n_episodes,
@@ -345,22 +357,59 @@ if __name__ == "__main__":
             if key.startswith("lora/")
         }
     )
+    
+    # Configure quantization
+    quantization_config = None
+    if hyperparams["quantization"] == "4bit":
+        print("Using 4-bit quantization with BitsAndBytesConfig")
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+        )
+    elif hyperparams["quantization"] == "8bit":
+        print("Using 8-bit quantization with BitsAndBytesConfig")
+        quantization_config = BitsAndBytesConfig(
+            load_in_8bit=True,
+        )
+    elif hyperparams["load_in_8bit"]:  # Backward compatibility
+        print("Using deprecated 8-bit quantization (load_in_8bit=True)")
+        quantization_config = BitsAndBytesConfig(
+            load_in_8bit=True,
+        )
+    else:
+        print("No quantization configured")
+    
+    # Try loading the model with the configured quantization
     try:
         model = AutoModelForCausalLMWithValueHead.from_pretrained(
             pretrained_model_name_or_path=hyperparams["model_name"],
             peft_config=lora_config,
-            load_in_8bit=hyperparams["load_in_8bit"],
+            quantization_config=quantization_config,
+            device_map="auto",  # This helps with device mapping
             token=HF_TOKEN,
-        ).to(device)
+        )
+        print(f"Successfully loaded model with quantization: {hyperparams['quantization']}")
     except Exception as e:
-        print(f"Error loading model with 8-bit quantization: {e}")
-        print("Falling back to loading without 8-bit quantization...")
-        model = AutoModelForCausalLMWithValueHead.from_pretrained(
-            pretrained_model_name_or_path=hyperparams["model_name"],
-            peft_config=lora_config,
-            load_in_8bit=False,
-            token=HF_TOKEN,
-        ).to(device)
+        print(f"Error loading model with quantization: {e}")
+        print("Falling back to loading without quantization...")
+        try:
+            model = AutoModelForCausalLMWithValueHead.from_pretrained(
+                pretrained_model_name_or_path=hyperparams["model_name"],
+                peft_config=lora_config,
+                device_map="auto",
+                token=HF_TOKEN,
+            ).to(device)
+            print("Successfully loaded model without quantization")
+        except Exception as e2:
+            print(f"Error loading model without quantization: {e2}")
+            print("Trying with manual device mapping...")
+            model = AutoModelForCausalLMWithValueHead.from_pretrained(
+                pretrained_model_name_or_path=hyperparams["model_name"],
+                peft_config=lora_config,
+                token=HF_TOKEN,
+            ).to(device)
     
     # Clear GPU cache and print memory info
     if torch.cuda.is_available():
@@ -370,6 +419,7 @@ if __name__ == "__main__":
     
     tokenizer = AutoTokenizer.from_pretrained(hyperparams["model_name"], token=HF_TOKEN)
     tokenizer.add_special_tokens({"pad_token": "<pad>"})
+    tokenizer.pad_token_id = tokenizer.eos_token_id
     model.pretrained_model.resize_token_embeddings(len(tokenizer))
 
     agent = get_agent(model, tokenizer, device, hyperparams)

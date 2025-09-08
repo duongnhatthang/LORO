@@ -118,7 +118,7 @@ def run_exp_and_save(
 #     return rollout_and_eval(hyperparams["max_episode_len"], hyperparams["env"], explorer, dqn, buffer, n_rollouts, hyperparams["seed"])
 
 
-def _online_training_from_pretrained_model(hyperparams, explorer, cache, model_size, suffix):
+def _online_training_from_pretrained_model(hyperparams, explorer, cache, model_size, suffix, n_pretrain_steps):
     model = pretrain_from_llm(hyperparams["data_path"], hyperparams, model_size, suffix)
     # assert hyperparams["data_path"] is None, "data_path should be None when training from a pretrained model"
     # assert hyperparams["n_pretrain_eps"] == 0, "n_pretrain_eps should be 0 when training from a pretrained model"
@@ -132,7 +132,7 @@ def _online_training_from_pretrained_model(hyperparams, explorer, cache, model_s
 
     n_rollouts = hyperparams["n_online_eps"] # Only rollout for n_online_eps since the model was pretrained on n_pretrain_eps
     for i in range(hyperparams["n_exp"]):
-        cache[f"pretrain_{model_size}_{hyperparams['n_pretrain_steps']}_{i}"], cache[f"pretrain_{model_size}_{hyperparams['n_pretrain_steps']}_{i}_dataset"], _ = rollout_and_eval(hyperparams["max_episode_len"], hyperparams["env"], explorer, model, buffer, n_rollouts, hyperparams["seed"]+i)
+        cache[f"pretrain_{model_size}_{n_pretrain_steps}_{i}"], cache[f"pretrain_{model_size}_{n_pretrain_steps}_{i}_dataset"], _ = rollout_and_eval(hyperparams["max_episode_len"], hyperparams["env"], explorer, model, buffer, n_rollouts, hyperparams["seed"]+i)
     return cache
 
 
@@ -176,8 +176,8 @@ def _online_training_with_mixed_pretraining_data(hyperparams, explorer, cache):
 
 def _online_training(hyperparams, explorer, cache, data_path, model_size, suffix, skip_from_scratch=False):
     hyperparams["data_path"] = data_path # Restore data path for mixed pretraining runs
-    cache = _online_training_from_pretrained_model(hyperparams, explorer, cache, model_size, suffix)
-    cache = _online_training_from_pretrained_model(hyperparams, explorer, cache, model_size, suffix)
+    cache = _online_training_from_pretrained_model(hyperparams, explorer, cache, model_size, suffix, 1000)
+    cache = _online_training_from_pretrained_model(hyperparams, explorer, cache, model_size, suffix, 3000)
 
     if not skip_from_scratch:
         cache = _online_training_from_scratch(hyperparams, explorer, cache)
@@ -232,6 +232,8 @@ if __name__ == "__main__":
                        help="Run pretraining experiments (run_exp_and_save calls)")
     parser.add_argument("--awac", action="store_true", default=False,
                        help="Using AWAC model")
+    parser.add_argument("--n_steps_per_epoch", type=int, default=200,
+                       help="Number of steps per epoch for training")
     
     args = parser.parse_args()
     
@@ -254,6 +256,7 @@ if __name__ == "__main__":
         "n_pretrain_steps": args.n_pretrain_steps,
         "pretraining_exp": args.pretraining_exp,
         "awac": args.awac,
+        "n_steps_per_epoch": args.n_steps_per_epoch,
     }
 
     # setup explorers

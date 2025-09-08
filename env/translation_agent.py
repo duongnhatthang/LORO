@@ -16,6 +16,7 @@ class TranslationAgent(Agent):
         ppo_config_dict=None,
         obs_translator=None,
         game_describer=None,
+        is_sft=False,
         reasoning_mode="COT",
         num_votes=5,
         num_cot_samples=5,
@@ -30,7 +31,7 @@ class TranslationAgent(Agent):
         elif game_describer:
             self.game_describer = game_describer
         super().__init__(
-            model, tokenizer, device, generate_config_dict, ppo_config_dict
+            model, tokenizer, device, generate_config_dict, ppo_config_dict, is_sft
         )
 
     def get_system_prompt(self) -> str:
@@ -179,6 +180,7 @@ class SpaceInvadersAgent(TranslationAgent):
         ppo_config_dict=None,
         obs_translator=None,
         game_describer=None,
+        is_sft=False,
     ):
         if obs_translator is None:
             obs_translator = atari.SpaceInvaders_translator.ObsTranslator()
@@ -214,6 +216,7 @@ class SpaceInvadersAgent(TranslationAgent):
             ppo_config_dict,
             obs_translator,
             game_describer,
+            is_sft,
         )
 
     def extract_action(self, response: str) -> gym.core.ActType:
@@ -256,6 +259,7 @@ class PongAgent(TranslationAgent):
         ppo_config_dict=None,
         obs_translator=None,
         game_describer=None,
+        is_sft=False,
     ):
         if obs_translator is None:
             obs_translator = atari.Pong_translator.ObsTranslator()
@@ -291,6 +295,7 @@ class PongAgent(TranslationAgent):
             ppo_config_dict,
             obs_translator,
             game_describer,
+            is_sft,
         )
 
     def extract_action(self, response: str) -> gym.core.ActType:
@@ -398,10 +403,29 @@ class MountainCarAgent(TranslationAgent):
 
 
 class FrozenLakeAgent(TranslationAgent):
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self,
+        model,
+        tokenizer,
+        device,
+        generate_config_dict=None,
+        ppo_config_dict=None,
+        obs_translator=None,
+        game_describer=None,
+        is_sft=False,
+    ):
         self.env_hist = None
         self.env_hist_prompt = None
-        super().__init__(*args, **kwargs)
+        super().__init__(
+            model,
+            tokenizer,
+            device,
+            generate_config_dict,
+            ppo_config_dict,
+            obs_translator,
+            game_describer,
+            is_sft,
+        )
 
     def get_system_prompt(self) -> str:
         original_sys_prompt = super().get_system_prompt()

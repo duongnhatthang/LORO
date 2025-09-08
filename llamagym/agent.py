@@ -34,7 +34,7 @@ def custom_create_reference_model(model):
 
 class Agent(ABC):
     def __init__(
-        self, model, tokenizer, device, generate_config_dict=None, ppo_config_dict=None
+        self, model, tokenizer, device, generate_config_dict=None, ppo_config_dict=None, is_sft=False
     ):
         if generate_config_dict is None:
             generate_config_dict = {
@@ -51,13 +51,17 @@ class Agent(ABC):
         self.tokenizer = tokenizer
         self.device = device
         self.generate_config_dict = generate_config_dict
-        # try:
-        #     self.model_ref = create_reference_model(model)
-        # except Exception as e:
-        #     print(f"Error creating reference model: {e}")
-        #     self.model_ref = custom_create_reference_model(model)
-        # self.ppo_config = PPOConfig(**ppo_config_dict)
-        # self.ppo_trainer = PPOTrainer(self.ppo_config, model, self.model_ref, tokenizer)
+        self.is_sft = is_sft
+        
+        if is_sft:
+            print("Creating reference model for SFT")
+            try:
+                self.model_ref = create_reference_model(model)
+            except Exception as e:
+                print(f"Error creating reference model: {e}")
+                self.model_ref = custom_create_reference_model(model)
+            self.ppo_config = PPOConfig(**ppo_config_dict)
+            self.ppo_trainer = PPOTrainer(self.ppo_config, model, self.model_ref, tokenizer)
 
         self.current_batch = {"queries": [], "responses": [], "rewards": []}
 
@@ -86,12 +90,20 @@ class Agent(ABC):
             messages, tokenize=False, add_generation_prompt=True
         )
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        
+        # Prepare generation config with pad_token_id
+        generation_config = {
+            key.split("/")[-1]: value
+            for key, value in self.generate_config_dict.items()
+        }
+        # Set pad_token_id to eos_token_id to avoid warnings
+        if self.tokenizer.pad_token_id is None:
+            generation_config["pad_token_id"] = self.tokenizer.eos_token_id
+        
         generate_ids = self.model.generate(
-            inputs=inputs.input_ids,
-            **{
-                key.split("/")[-1]: value
-                for key, value in self.generate_config_dict.items()
-            }
+            input_ids=inputs.input_ids,
+            attention_mask=inputs.attention_mask,
+            **generation_config
         )
         outputs = self.tokenizer.batch_decode(
             generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
@@ -160,7 +172,7 @@ class Agent(ABC):
         ]
         self.current_episode_rewards = []
 
-        if train:
+        if train and self.is_sft:
             self.current_batch["queries"].extend(queries)
             self.current_batch["responses"].extend(responses)
             self.current_batch["rewards"].extend(rewards)
@@ -176,6 +188,10 @@ class Agent(ABC):
         return {}
 
     def train_batch(self, batch_queries, batch_responses, batch_rewards):
+        if not self.is_sft:
+            print("Not training batch because not SFT")
+            return {}
+            
         if len(batch_queries) > self.ppo_config.batch_size:
             queries = batch_queries[: self.ppo_config.batch_size]
             responses = batch_responses[: self.ppo_config.batch_size]

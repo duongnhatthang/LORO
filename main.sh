@@ -15,9 +15,13 @@ SFT=false
 SEED=42069
 BATCH_SIZE=1
 EPS=0.0
-LOAD_IN_8BIT=true
-N_ONLINE_EPS=190
-N_PRETRAIN_EPS=10
+QUANTIZATION="4bit"
+N_ONLINE_EPS_1=190
+N_ONLINE_EPS_2=180
+N_ONLINE_EPS_3=170
+N_PRETRAIN_EPS_1=10
+N_PRETRAIN_EPS_2=20
+N_PRETRAIN_EPS_3=30
 N_EXP=5
 GPU=true
 BUFFER_SIZE=100000
@@ -25,9 +29,10 @@ LEARNING_RATE=5e-5
 GAMMA=0.99
 TARGET_UPDATE_INTERVAL=1000
 N_PRETRAIN_STEPS=1000
-PRETRAINING_EXP=false
+PRETRAINING_EXP=true
 LONG_COT=false
 AWAC=false
+N_STEPS_PER_EPOCH=200
 
 # Function to display usage
 usage() {
@@ -43,9 +48,13 @@ usage() {
     echo "  --seed N                     Random seed (default: $SEED)"
     echo "  --batch_size N               Batch size (default: $BATCH_SIZE)"
     echo "  --eps FLOAT                  Epsilon for exploration (default: $EPS)"
-    echo "  --no-8bit                    Disable 8-bit loading (default: enabled)"
-    echo "  --n_online_eps N             Number of online episodes (default: $N_ONLINE_EPS)"
-    echo "  --n_pretrain_eps N           Number of pretraining episodes (default: $N_PRETRAIN_EPS)"
+    echo "  --quantization METHOD        Quantization method: none, 4bit, or 8bit (default: $QUANTIZATION)"
+    echo "  --n_online_eps_1 N           Number of online episodes for run 1 (default: $N_ONLINE_EPS_1)"
+    echo "  --n_online_eps_2 N           Number of online episodes for run 2 (default: $N_ONLINE_EPS_2)"
+    echo "  --n_online_eps_3 N           Number of online episodes for run 3 (default: $N_ONLINE_EPS_3)"
+    echo "  --n_pretrain_eps_1 N         Number of pretraining episodes for run 1 (default: $N_PRETRAIN_EPS_1)"
+    echo "  --n_pretrain_eps_2 N         Number of pretraining episodes for run 2 (default: $N_PRETRAIN_EPS_2)"
+    echo "  --n_pretrain_eps_3 N         Number of pretraining episodes for run 3 (default: $N_PRETRAIN_EPS_3)"
     echo "  --n_exp N                    Number of experiments (default: $N_EXP)"
     echo "  --no-gpu                     Disable GPU usage (default: enabled)"
     echo "  --buffer_size N              Replay buffer size (default: $BUFFER_SIZE)"
@@ -53,9 +62,10 @@ usage() {
     echo "  --gamma FLOAT                Discount factor (default: $GAMMA)"
     echo "  --target_update_interval N   Target network update interval (default: $TARGET_UPDATE_INTERVAL)"
     echo "  --n_pretrain_steps N         Number of pretraining steps (default: $N_PRETRAIN_STEPS)"
-    echo "  --pretraining_exp            Run pretraining experiments (default: false)"
+    echo "  --pretraining_exp            Run pretraining experiments (default: true)"
     echo "  --long_cot                   Use DeepSeek long CoT data paths (default: false)"
     echo "  --awac                       Use AWAC model instead of SAC or DoubleDQN (default: false)"
+    echo "  --n_steps_per_epoch N        Number of steps per epoch for training (default: $N_STEPS_PER_EPOCH)"
     echo "  --help                       Show this help message"
     echo ""
     echo "Examples:"
@@ -103,16 +113,32 @@ while [[ $# -gt 0 ]]; do
             EPS="$2"
             shift 2
             ;;
-        --no-8bit)
-            LOAD_IN_8BIT=false
-            shift
-            ;;
-        --n_online_eps)
-            N_ONLINE_EPS="$2"
+        --quantization)
+            QUANTIZATION="$2"
             shift 2
             ;;
-        --n_pretrain_eps)
-            N_PRETRAIN_EPS="$2"
+        --n_online_eps_1)
+            N_ONLINE_EPS_1="$2"
+            shift 2
+            ;;
+        --n_online_eps_2)
+            N_ONLINE_EPS_2="$2"
+            shift 2
+            ;;
+        --n_online_eps_3)
+            N_ONLINE_EPS_3="$2"
+            shift 2
+            ;;
+        --n_pretrain_eps_1)
+            N_PRETRAIN_EPS_1="$2"
+            shift 2
+            ;;
+        --n_pretrain_eps_2)
+            N_PRETRAIN_EPS_2="$2"
+            shift 2
+            ;;
+        --n_pretrain_eps_3)
+            N_PRETRAIN_EPS_3="$2"
             shift 2
             ;;
         --n_exp)
@@ -155,6 +181,10 @@ while [[ $# -gt 0 ]]; do
             AWAC=true
             shift
             ;;
+        --n_steps_per_epoch)
+            N_STEPS_PER_EPOCH="$2"
+            shift 2
+            ;;
         --help)
             usage
             exit 0
@@ -178,8 +208,12 @@ echo "Environment: $ENV"
 echo "Model 1: $MODEL_NAME_1"
 echo "Model 2: $MODEL_NAME_2"
 echo "LLM Episodes: $N_EPISODES"
-echo "Online Episodes: $N_ONLINE_EPS"
-echo "Pretrain Episodes: $N_PRETRAIN_EPS"
+echo "Online Episodes 1: $N_ONLINE_EPS_1"
+echo "Online Episodes 2: $N_ONLINE_EPS_2"
+echo "Online Episodes 3: $N_ONLINE_EPS_3"
+echo "Pretrain Episodes 1: $N_PRETRAIN_EPS_1"
+echo "Pretrain Episodes 2: $N_PRETRAIN_EPS_2"
+echo "Pretrain Episodes 3: $N_PRETRAIN_EPS_3"
 echo "Seed: $SEED"
 echo "SFT: $SFT"
 echo "GPU: $GPU"
@@ -191,28 +225,21 @@ LLM_BASE_ARGS="--env $ENV --n_episodes $N_EPISODES --max_episode_len $MAX_EPISOD
 if [ "$SFT" = true ]; then
     LLM_BASE_ARGS="$LLM_BASE_ARGS --SFT"
 fi
-if [ "$LOAD_IN_8BIT" = true ]; then
-    LLM_BASE_ARGS="$LLM_BASE_ARGS --load_in_8bit true"
-else
-    LLM_BASE_ARGS="$LLM_BASE_ARGS --load_in_8bit false"
-fi
+LLM_BASE_ARGS="$LLM_BASE_ARGS --quantization $QUANTIZATION"
 
-# Build arguments for online_main.py
-ONLINE_ARGS="--env $ENV --max_episode_len $MAX_EPISODE_LEN --n_online_eps $N_ONLINE_EPS --n_pretrain_eps $N_PRETRAIN_EPS --seed $SEED --eps $EPS --n_exp $N_EXP --buffer_size $BUFFER_SIZE --batch_size $BATCH_SIZE --learning_rate $LEARNING_RATE --gamma $GAMMA --target_update_interval $TARGET_UPDATE_INTERVAL --n_pretrain_steps $N_PRETRAIN_STEPS"
+# Build arguments for online_main.py (will be customized for each run)
+ONLINE_BASE_ARGS="--env $ENV --max_episode_len $MAX_EPISODE_LEN --seed $SEED --eps $EPS --n_exp $N_EXP --buffer_size $BUFFER_SIZE --batch_size $BATCH_SIZE --learning_rate $LEARNING_RATE --gamma $GAMMA --target_update_interval $TARGET_UPDATE_INTERVAL --n_pretrain_steps $N_PRETRAIN_STEPS --n_steps_per_epoch $N_STEPS_PER_EPOCH"
 if [ "$GPU" = true ]; then
-    ONLINE_ARGS="$ONLINE_ARGS --gpu"
+    ONLINE_BASE_ARGS="$ONLINE_BASE_ARGS --gpu"
 fi
 if [ "$SFT" = true ]; then
-    ONLINE_ARGS="$ONLINE_ARGS --sft"
-fi
-if [ "$PRETRAINING_EXP" = true ]; then
-    ONLINE_ARGS="$ONLINE_ARGS --pretraining_exp"
+    ONLINE_BASE_ARGS="$ONLINE_BASE_ARGS --sft"
 fi
 if [ "$LONG_COT" = true ]; then
-    ONLINE_ARGS="$ONLINE_ARGS --long_cot"
+    ONLINE_BASE_ARGS="$ONLINE_BASE_ARGS --long_cot"
 fi
 if [ "$AWAC" = true ]; then
-    ONLINE_ARGS="$ONLINE_ARGS --awac"
+    ONLINE_BASE_ARGS="$ONLINE_BASE_ARGS --awac"
 fi
 
 # Step 1: Run LLM training with Model 1
@@ -248,15 +275,53 @@ echo ""
 echo "LLM training with Model 2 completed successfully!"
 echo ""
 
-# Step 3: Run online training
-echo "Step 3: Running online training..."
-echo "Command: python online_main.py $ONLINE_ARGS"
+# Step 3: Run online training with first pair
+echo "Step 3: Running online training with first pair..."
+ONLINE_ARGS_1="$ONLINE_BASE_ARGS --n_online_eps $N_ONLINE_EPS_1 --n_pretrain_eps $N_PRETRAIN_EPS_1 --pretraining_exp"
+
+echo "Command: python online_main.py $ONLINE_ARGS_1"
 echo ""
 
-python online_main.py $ONLINE_ARGS
+python online_main.py $ONLINE_ARGS_1
 
 if [ $? -ne 0 ]; then
-    echo "Error: Online training failed!"
+    echo "Error: Online training with first pair failed!"
+    exit 1
+fi
+
+echo ""
+echo "Online training with first pair completed successfully!"
+echo ""
+
+# Step 4: Run online training with second pair
+echo "Step 4: Running online training with second pair..."
+ONLINE_ARGS_2="$ONLINE_BASE_ARGS --n_online_eps $N_ONLINE_EPS_2 --n_pretrain_eps $N_PRETRAIN_EPS_2"
+
+echo "Command: python online_main.py $ONLINE_ARGS_2"
+echo ""
+
+python online_main.py $ONLINE_ARGS_2
+
+if [ $? -ne 0 ]; then
+    echo "Error: Online training with second pair failed!"
+    exit 1
+fi
+
+echo ""
+echo "Online training with second pair completed successfully!"
+echo ""
+
+# Step 5: Run online training with third pair
+echo "Step 5: Running online training with third pair..."
+ONLINE_ARGS_3="$ONLINE_BASE_ARGS --n_online_eps $N_ONLINE_EPS_3 --n_pretrain_eps $N_PRETRAIN_EPS_3"
+
+echo "Command: python online_main.py $ONLINE_ARGS_3"
+echo ""
+
+python online_main.py $ONLINE_ARGS_3
+
+if [ $? -ne 0 ]; then
+    echo "Error: Online training with third pair failed!"
     exit 1
 fi
 
@@ -268,6 +333,8 @@ echo ""
 echo "Generated files:"
 echo "- LLM dataset (Model 1): data/${ENV%%-*}_${MODEL_NAME_1##*/}_Neps_${N_EPISODES}$([ "$SFT" = true ] && echo "SFT" || echo "").pkl"
 echo "- LLM dataset (Model 2): data/${ENV%%-*}_${MODEL_NAME_2##*/}_Neps_${N_EPISODES}$([ "$SFT" = true ] && echo "SFT" || echo "").pkl"
-echo "- Online results: data/cache_${ENV%%-*}_Neps_${N_PRETRAIN_EPS}$([ "$SFT" = true ] && echo "SFT" || [ "$LONG_COT" = true ] && echo "LCOT" || echo "").pkl"
+echo "- Online results (Run 1): data/cache_${ENV%%-*}_Neps_${N_PRETRAIN_EPS_1}$([ "$SFT" = true ] && echo "SFT" || [ "$LONG_COT" = true ] && echo "LCOT" || echo "").pkl"
+echo "- Online results (Run 2): data/cache_${ENV%%-*}_Neps_${N_PRETRAIN_EPS_2}$([ "$SFT" = true ] && echo "SFT" || [ "$LONG_COT" = true ] && echo "LCOT" || echo "").pkl"
+echo "- Online results (Run 3): data/cache_${ENV%%-*}_Neps_${N_PRETRAIN_EPS_3}$([ "$SFT" = true ] && echo "SFT" || [ "$LONG_COT" = true ] && echo "LCOT" || echo "").pkl"
 echo "- Timing logs: logs/"
 echo ""
