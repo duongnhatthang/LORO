@@ -40,7 +40,7 @@ usage() {
     echo ""
     echo "Options:"
     echo "  --model_name_1 MODEL         First model name for LLM (default: $MODEL_NAME_1)"
-    echo "  --model_name_2 MODEL         Second model name for LLM (default: $MODEL_NAME_2)"
+    echo "  --model_name_2 MODEL         Second model name for LLM, or 'none' to skip (default: $MODEL_NAME_2)"
     echo "  --env ENV                    Environment name (default: $ENV)"
     echo "  --n_episodes N               Number of episodes for LLM training (default: $N_EPISODES)"
     echo "  --max_episode_len N          Maximum episode length (default: $MAX_EPISODE_LEN)"
@@ -72,6 +72,7 @@ usage() {
     echo "  $0 --env CartPole-v0 --n_episodes 50"
     echo "  $0 --env CliffWalking-v0 --SFT --n_online_eps 100"
     echo "  $0 --model_name_1 deepseek-ai/DeepSeek-R1-Distill-Qwen-7B --model_name_2 Qwen/Qwen2.5-7B-Instruct --env MountainCar-v0"
+    echo "  $0 --model_name_1 Qwen/Qwen2.5-7B-Instruct --model_name_2 none --env CartPole-v0"
 }
 
 # Parse command line arguments
@@ -259,21 +260,26 @@ echo ""
 echo "LLM training with Model 1 completed successfully!"
 echo ""
 
-# Step 2: Run LLM training with Model 2
-echo "Step 2: Running LLM training with Model 2..."
-echo "Command: python llm_main.py --model_name $MODEL_NAME_2 $LLM_BASE_ARGS"
-echo ""
+# Step 2: Run LLM training with Model 2 (skip if MODEL_NAME_2 is "none")
+if [ "$MODEL_NAME_2" != "none" ]; then
+    echo "Step 2: Running LLM training with Model 2..."
+    echo "Command: python llm_main.py --model_name $MODEL_NAME_2 $LLM_BASE_ARGS"
+    echo ""
 
-python llm_main.py --model_name "$MODEL_NAME_2" $LLM_BASE_ARGS
+    python llm_main.py --model_name "$MODEL_NAME_2" $LLM_BASE_ARGS
 
-if [ $? -ne 0 ]; then
-    echo "Error: LLM training with Model 2 failed!"
-    exit 1
+    if [ $? -ne 0 ]; then
+        echo "Error: LLM training with Model 2 failed!"
+        exit 1
+    fi
+
+    echo ""
+    echo "LLM training with Model 2 completed successfully!"
+    echo ""
+else
+    echo "Step 2: Skipping LLM training with Model 2 (MODEL_NAME_2 is set to 'none')"
+    echo ""
 fi
-
-echo ""
-echo "LLM training with Model 2 completed successfully!"
-echo ""
 
 # Step 3: Run online training with first pair
 echo "Step 3: Running online training with first pair..."
@@ -332,7 +338,9 @@ echo "=========================================="
 echo ""
 echo "Generated files:"
 echo "- LLM dataset (Model 1): data/${ENV%%-*}_${MODEL_NAME_1##*/}_Neps_${N_EPISODES}$([ "$SFT" = true ] && echo "SFT" || echo "").pkl"
-echo "- LLM dataset (Model 2): data/${ENV%%-*}_${MODEL_NAME_2##*/}_Neps_${N_EPISODES}$([ "$SFT" = true ] && echo "SFT" || echo "").pkl"
+if [ "$MODEL_NAME_2" != "none" ]; then
+    echo "- LLM dataset (Model 2): data/${ENV%%-*}_${MODEL_NAME_2##*/}_Neps_${N_EPISODES}$([ "$SFT" = true ] && echo "SFT" || echo "").pkl"
+fi
 echo "- Online results (Run 1): data/cache_${ENV%%-*}_Neps_${N_PRETRAIN_EPS_1}$([ "$SFT" = true ] && echo "SFT" || [ "$LONG_COT" = true ] && echo "LCOT" || echo "").pkl"
 echo "- Online results (Run 2): data/cache_${ENV%%-*}_Neps_${N_PRETRAIN_EPS_2}$([ "$SFT" = true ] && echo "SFT" || [ "$LONG_COT" = true ] && echo "LCOT" || echo "").pkl"
 echo "- Online results (Run 3): data/cache_${ENV%%-*}_Neps_${N_PRETRAIN_EPS_3}$([ "$SFT" = true ] && echo "SFT" || [ "$LONG_COT" = true ] && echo "LCOT" || echo "").pkl"

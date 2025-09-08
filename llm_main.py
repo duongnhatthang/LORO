@@ -18,6 +18,7 @@ import torch
 from env.translation_agent import SpaceInvadersAgent, PongAgent
 from env import classic_control, toy_text, translation_agent
 from env.atari.represented_atari_game import GymCompatWrapper
+from env.atari import register_environments
 
 
 def get_agent(model, tokenizer, device, hyperparams):
@@ -423,7 +424,9 @@ if __name__ == "__main__":
     model.pretrained_model.resize_token_embeddings(len(tokenizer))
 
     agent = get_agent(model, tokenizer, device, hyperparams)
+    # Ensure represented Atari environments are registered before creation
     if "Represented" in hyperparams["env"]:
+        register_environments()
         env = gym.make(hyperparams["env"])
     else:
         env = GymCompatWrapper(gym.make(hyperparams["env"]))
