@@ -6,7 +6,8 @@
 set -e  # Exit on any error
 
 # Default values
-MODEL_NAME="Qwen/Qwen2.5-7B-Instruct"
+MODEL_NAME_1="Qwen/Qwen2.5-7B-Instruct"
+MODEL_NAME_2="Qwen/Qwen2.5-32B-Instruct"
 ENV="CliffWalking-v0"
 N_EPISODES=30
 MAX_EPISODE_LEN=200
@@ -33,7 +34,8 @@ usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --model_name MODEL           Model name for LLM (default: $MODEL_NAME)"
+    echo "  --model_name_1 MODEL         First model name for LLM (default: $MODEL_NAME_1)"
+    echo "  --model_name_2 MODEL         Second model name for LLM (default: $MODEL_NAME_2)"
     echo "  --env ENV                    Environment name (default: $ENV)"
     echo "  --n_episodes N               Number of episodes for LLM training (default: $N_EPISODES)"
     echo "  --max_episode_len N          Maximum episode length (default: $MAX_EPISODE_LEN)"
@@ -59,14 +61,18 @@ usage() {
     echo "Examples:"
     echo "  $0 --env CartPole-v0 --n_episodes 50"
     echo "  $0 --env CliffWalking-v0 --SFT --n_online_eps 100"
-    echo "  $0 --model_name deepseek-ai/DeepSeek-R1-Distill-Qwen-7B --env MountainCar-v0"
+    echo "  $0 --model_name_1 deepseek-ai/DeepSeek-R1-Distill-Qwen-7B --model_name_2 Qwen/Qwen2.5-7B-Instruct --env MountainCar-v0"
 }
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --model_name)
-            MODEL_NAME="$2"
+        --model_name_1)
+            MODEL_NAME_1="$2"
+            shift 2
+            ;;
+        --model_name_2)
+            MODEL_NAME_2="$2"
             shift 2
             ;;
         --env)
@@ -169,7 +175,8 @@ echo "=========================================="
 echo "LORO Pipeline Execution"
 echo "=========================================="
 echo "Environment: $ENV"
-echo "Model: $MODEL_NAME"
+echo "Model 1: $MODEL_NAME_1"
+echo "Model 2: $MODEL_NAME_2"
 echo "LLM Episodes: $N_EPISODES"
 echo "Online Episodes: $N_ONLINE_EPS"
 echo "Pretrain Episodes: $N_PRETRAIN_EPS"
@@ -179,15 +186,15 @@ echo "GPU: $GPU"
 echo "AWAC: $AWAC"
 echo "=========================================="
 
-# Build arguments for llm_main.py
-LLM_ARGS="--model_name $MODEL_NAME --env $ENV --n_episodes $N_EPISODES --max_episode_len $MAX_EPISODE_LEN --seed $SEED --batch_size $BATCH_SIZE --eps $EPS"
+# Build base arguments for llm_main.py (without model_name)
+LLM_BASE_ARGS="--env $ENV --n_episodes $N_EPISODES --max_episode_len $MAX_EPISODE_LEN --seed $SEED --batch_size $BATCH_SIZE --eps $EPS"
 if [ "$SFT" = true ]; then
-    LLM_ARGS="$LLM_ARGS --SFT"
+    LLM_BASE_ARGS="$LLM_BASE_ARGS --SFT"
 fi
 if [ "$LOAD_IN_8BIT" = true ]; then
-    LLM_ARGS="$LLM_ARGS --load_in_8bit true"
+    LLM_BASE_ARGS="$LLM_BASE_ARGS --load_in_8bit true"
 else
-    LLM_ARGS="$LLM_ARGS --load_in_8bit false"
+    LLM_BASE_ARGS="$LLM_BASE_ARGS --load_in_8bit false"
 fi
 
 # Build arguments for online_main.py
@@ -208,25 +215,41 @@ if [ "$AWAC" = true ]; then
     ONLINE_ARGS="$ONLINE_ARGS --awac"
 fi
 
-# Step 1: Run LLM training
+# Step 1: Run LLM training with Model 1
 echo ""
-echo "Step 1: Running LLM training..."
-echo "Command: python llm_main.py $LLM_ARGS"
+echo "Step 1: Running LLM training with Model 1..."
+echo "Command: python llm_main.py --model_name $MODEL_NAME_1 $LLM_BASE_ARGS"
 echo ""
 
-python llm_main.py $LLM_ARGS
+python llm_main.py --model_name "$MODEL_NAME_1" $LLM_BASE_ARGS
 
 if [ $? -ne 0 ]; then
-    echo "Error: LLM training failed!"
+    echo "Error: LLM training with Model 1 failed!"
     exit 1
 fi
 
 echo ""
-echo "LLM training completed successfully!"
+echo "LLM training with Model 1 completed successfully!"
 echo ""
 
-# Step 2: Run online training
-echo "Step 2: Running online training..."
+# Step 2: Run LLM training with Model 2
+echo "Step 2: Running LLM training with Model 2..."
+echo "Command: python llm_main.py --model_name $MODEL_NAME_2 $LLM_BASE_ARGS"
+echo ""
+
+python llm_main.py --model_name "$MODEL_NAME_2" $LLM_BASE_ARGS
+
+if [ $? -ne 0 ]; then
+    echo "Error: LLM training with Model 2 failed!"
+    exit 1
+fi
+
+echo ""
+echo "LLM training with Model 2 completed successfully!"
+echo ""
+
+# Step 3: Run online training
+echo "Step 3: Running online training..."
 echo "Command: python online_main.py $ONLINE_ARGS"
 echo ""
 
@@ -243,7 +266,8 @@ echo "LORO Pipeline completed successfully!"
 echo "=========================================="
 echo ""
 echo "Generated files:"
-echo "- LLM dataset: data/${ENV%%-*}_${MODEL_NAME##*/}_Neps_${N_EPISODES}$([ "$SFT" = true ] && echo "SFT" || echo "").pkl"
+echo "- LLM dataset (Model 1): data/${ENV%%-*}_${MODEL_NAME_1##*/}_Neps_${N_EPISODES}$([ "$SFT" = true ] && echo "SFT" || echo "").pkl"
+echo "- LLM dataset (Model 2): data/${ENV%%-*}_${MODEL_NAME_2##*/}_Neps_${N_EPISODES}$([ "$SFT" = true ] && echo "SFT" || echo "").pkl"
 echo "- Online results: data/cache_${ENV%%-*}_Neps_${N_PRETRAIN_EPS}$([ "$SFT" = true ] && echo "SFT" || [ "$LONG_COT" = true ] && echo "LCOT" || echo "").pkl"
 echo "- Timing logs: logs/"
 echo ""
