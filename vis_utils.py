@@ -38,11 +38,16 @@ def process_on_policy_pretrain(cache, n_pretrain_eps, n_episodes, n_pretrain_ste
     n_online_eps = n_episodes - n_pretrain_eps
     returns = np.zeros((n_exp, n_episodes))
     for i in range(n_exp):
-        returns[i] = np.squeeze(np.array(cache[
-            f"pretrain_{n_pretrain_eps}_eps_{n_pretrain_steps}_steps_{i}{'_rand' if is_rand else ''}"
-        ][: n_pretrain_eps]+cache[
-            f"pretrain_{n_pretrain_eps}_eps_{n_pretrain_steps}_steps_{i}{'_rand' if is_rand else ''}"
-        ][-n_online_eps:]))
+        # Try current key format first
+        key = f"pretrain_{n_pretrain_eps}_eps_{n_pretrain_steps}_steps_{i}"
+        if key not in cache.keys():
+            # Fall back to old key format with suffix for backward compatibility
+            print(f"Warning: Using old key format for backward compatibility. Original key '{key}' not found.")
+            key = f"pretrain_{n_pretrain_eps}_eps_{n_pretrain_steps}_steps_{i}{'_rand' if is_rand else ''}"
+            if key not in cache.keys():
+                print(f"Key not found: {key}")
+                print("Available keys:", list(cache.keys()))
+        returns[i] = np.squeeze(np.array(cache[key][: n_pretrain_eps]+cache[key][-n_online_eps:]))
     return np.mean(returns, axis=0), np.std(returns, axis=0)
 
 def processing_offline_online_data(avg_offline_returns, online_cache, n_pretrain_eps, online_cache_key, n_exp, n_episodes):
@@ -67,14 +72,13 @@ def processing_offline_online_data(avg_offline_returns, online_cache, n_pretrain
     std_returns[:n_pretrain_eps] = np.zeros(n_pretrain_eps)
     return average_returns, std_returns
 
-def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, Qwen_7B_SFT, mean_random):
-    suffix = ""
+def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, mean_random, is_awac=False):
+    suffix = "" if not is_awac else "_awac"
     cache10 = load_cache(hyperparams["env"].split("-")[0], 10, suffix)
     cache20 = load_cache(hyperparams["env"].split("-")[0], 20, suffix)
     cache30 = load_cache(hyperparams["env"].split("-")[0], 30, suffix)
     on_policy_pretrain_cache = load_cache_on_policy_or_rand(hyperparams["env"].split("-")[0])
     rand_pretrain_cache = load_cache_on_policy_or_rand(hyperparams["env"].split("-")[0], is_rand=True)
-    
     try:
         suffix = "SFT"
         cache10SFT = load_cache(hyperparams["env"].split("-")[0], 10, suffix)
@@ -284,33 +288,38 @@ def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, Qwen_7B_SFT, mea
                 out_dict[f"pretrain_32b_1000_{n_eps}_{i}_dataset"] = cache[f"pretrain_32b_1000_{i}_dataset"]
                 out_dict[f"on_pol_1000_{n_eps}_{i}_dataset"] = on_policy_pretrain_cache[f"pretrain_{n_eps}_eps_1000_steps_{i}_dataset"]
                 out_dict[f"on_pol_1000_{n_eps}_{i}_offline_dataset"] = on_policy_pretrain_cache[f"pretrain_{n_eps}_eps_1000_steps_{i}_offline_dataset"]
-                out_dict[f"rand_1000_{n_eps}_{i}_dataset"] = rand_pretrain_cache[f"pretrain_{n_eps}_eps_1000_steps_{i}_rand_dataset"]
-                out_dict[f"rand_1000_{n_eps}_{i}_offline_dataset"] = rand_pretrain_cache[f"pretrain_{n_eps}_eps_1000_steps_{i}_rand_offline_dataset"]
+                ran_key_0, ran_key_1 = f"pretrain_{n_eps}_eps_1000_steps_{i}_dataset", f"pretrain_{n_eps}_eps_1000_steps_{i}_offline_dataset"
+                if ran_key_0 not in rand_pretrain_cache or ran_key_1 not in rand_pretrain_cache:
+                    print(f"Warning: Using old key format for backward compatibility. Original keys '{ran_key_0}' or '{ran_key_1}' not found.")
+                    ran_key_0, ran_key_1 = f"pretrain_{n_eps}_eps_1000_steps_{i}_rand_dataset", f"pretrain_{n_eps}_eps_1000_steps_{i}_rand_offline_dataset"
+                out_dict[f"rand_1000_{n_eps}_{i}_dataset"] = rand_pretrain_cache[ran_key_0]
+                out_dict[f"rand_1000_{n_eps}_{i}_offline_dataset"] = rand_pretrain_cache[ran_key_1]
     return out_dict
 
 
-def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random):
+def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random, model_size="7b"):
+    assert model_size in ["7b", "32b"], "model_size must be either '7b' or '32b'"
     plt.rcParams["font.size"] = 18
     plt.figure(figsize=(12, 6))
     plt.plot(
-        cache["mean_onl"], label=f'On-policy. Cum. reward={int(sum(cache["mean_onl"]))}'
+        cache[f"mean_pretrain_{model_size}_1000_pre_10"],
+        label=f'LORO. Cum. reward={int(sum(cache[f"mean_pretrain_{model_size}_1000_pre_10"]))}',
+    )
+    plt.fill_between(
+        cache["x"],
+        cache[f"mean_pretrain_{model_size}_1000_pre_10"]
+        - cache[f"std_pretrain_{model_size}_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_pretrain_{model_size}_1000_pre_10"]
+        + cache[f"std_pretrain_{model_size}_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        alpha=0.3,
+    )
+    plt.plot(
+        cache["mean_onl"], label=f'Online RL. Cum. reward={int(sum(cache["mean_onl"]))}'
     )
     plt.fill_between(
         cache["x"],
         cache["mean_onl"] - cache["std_onl"] / np.sqrt(hyperparams["n_exp"]),
         cache["mean_onl"] + cache["std_onl"] / np.sqrt(hyperparams["n_exp"]),
-        alpha=0.3,
-    )
-    plt.plot(
-        cache["mean_pretrain_7b_3000_pre_10"],
-        label=f'LORO. Cum. reward={int(sum(cache["mean_pretrain_7b_3000_pre_10"]))}',
-    )
-    plt.fill_between(
-        cache["x"],
-        cache["mean_pretrain_7b_3000_pre_10"]
-        - cache["std_pretrain_7b_3000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        cache["mean_pretrain_7b_3000_pre_10"]
-        + cache["std_pretrain_7b_3000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
         alpha=0.3,
     )
 
@@ -325,7 +334,7 @@ def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random):
     plt.title(f'{hyperparams["env"].split("-")[0]}')
     plt.xlabel("# of episodes")
     plt.ylabel("Episode reward")
-    if "MountainCar" in hyperparams["env"]:
+    if "MountainCar" in hyperparams["env"] or "RepresentedPong" in hyperparams["env"]:
         plt.legend(loc="upper right")
     else:
         plt.legend(loc="lower right")
@@ -337,7 +346,7 @@ def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random):
         plt.ylim(-210, -50)
     # plt.xticks(np.arange(0, 101, 10))
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_main.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_main{"_awac" if hyperparams["awac"] else ""}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -345,11 +354,24 @@ def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random):
     plt.show()
 
 
-def plot_pretrain(hyperparams, cache):
+def plot_pretrain(hyperparams, cache, model_size="7b"):
+    assert model_size in ["7b", "32b"], "model_size must be either '7b' or '32b'"
     plt.rcParams["font.size"] = 18
     plt.figure(figsize=(12, 6))
     plt.plot(
-        cache["mean_onl"], label=f'On-policy. Cum. reward={int(sum(cache["mean_onl"]))}'
+        cache[f"mean_pretrain_{model_size}_1000_pre_10"],
+        label=f'LORO. Cum. reward={int(sum(cache[f"mean_pretrain_{model_size}_1000_pre_10"]))}',
+    )
+    plt.fill_between(
+        cache["x"],
+        cache[f"mean_pretrain_{model_size}_1000_pre_10"]
+        - cache[f"std_pretrain_{model_size}_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_pretrain_{model_size}_1000_pre_10"]
+        + cache[f"std_pretrain_{model_size}_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        alpha=0.3,
+    )
+    plt.plot(
+        cache["mean_onl"], label=f'Online RL. Cum. reward={int(sum(cache["mean_onl"]))}'
     )
     plt.fill_between(
         cache["x"],
@@ -358,39 +380,27 @@ def plot_pretrain(hyperparams, cache):
         alpha=0.3,
     )
     plt.plot(
-        cache["mean_pretrain_7b_3000_pre_10"],
-        label=f'LORO. Cum. reward={int(sum(cache["mean_pretrain_7b_3000_pre_10"]))}',
+        cache["mean_on_pol_pretrain_1000_pre_10"],
+        label=f'Pretrain w/ Online RL data. Cum. reward={int(sum(cache["mean_on_pol_pretrain_1000_pre_10"]))}',
     )
     plt.fill_between(
         cache["x"],
-        cache["mean_pretrain_7b_3000_pre_10"]
-        - cache["std_pretrain_7b_3000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        cache["mean_pretrain_7b_3000_pre_10"]
-        + cache["std_pretrain_7b_3000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache["mean_on_pol_pretrain_1000_pre_10"]
+        - cache["std_on_pol_pretrain_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache["mean_on_pol_pretrain_1000_pre_10"]
+        + cache["std_on_pol_pretrain_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
         alpha=0.3,
     )
     plt.plot(
-        cache["mean_on_pol_pretrain_3000_pre_10"],
-        label=f'Pretrain w/ On-policy data. Cum. reward={int(sum(cache["mean_on_pol_pretrain_3000_pre_10"]))}',
+        cache["mean_rand_pretrain_1000_pre_10"],
+        label=f'Pretrain w/ random policy data. Cum. reward={int(sum(cache["mean_rand_pretrain_1000_pre_10"]))}',
     )
     plt.fill_between(
         cache["x"],
-        cache["mean_on_pol_pretrain_3000_pre_10"]
-        - cache["std_on_pol_pretrain_3000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        cache["mean_on_pol_pretrain_3000_pre_10"]
-        + cache["std_on_pol_pretrain_3000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        alpha=0.3,
-    )
-    plt.plot(
-        cache["mean_rand_pretrain_3000_pre_10"],
-        label=f'Pretrain w/ random policy data. Cum. reward={int(sum(cache["mean_rand_pretrain_3000_pre_10"]))}',
-    )
-    plt.fill_between(
-        cache["x"],
-        cache["mean_rand_pretrain_3000_pre_10"]
-        - cache["std_rand_pretrain_3000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        cache["mean_rand_pretrain_3000_pre_10"]
-        + cache["std_rand_pretrain_3000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache["mean_rand_pretrain_1000_pre_10"]
+        - cache["std_rand_pretrain_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache["mean_rand_pretrain_1000_pre_10"]
+        + cache["std_rand_pretrain_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
         alpha=0.3,
     )
 
@@ -401,12 +411,12 @@ def plot_pretrain(hyperparams, cache):
         plt.ylim(-500, 0)
     if "MountainCar" in hyperparams["env"]:
         plt.ylim(-210, -50)
-    if "MountainCar" in hyperparams["env"]:
+    if "MountainCar" in hyperparams["env"] or "RepresentedPong" in hyperparams["env"]:
         plt.legend(loc="upper right")
     else:
         plt.legend(loc="lower right")
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_pretrain.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_pretrain{"_awac" if hyperparams["awac"] else ""}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -414,11 +424,24 @@ def plot_pretrain(hyperparams, cache):
     plt.show()
 
 
-def plot_mix(hyperparams, cache):
+def plot_mix(hyperparams, cache, model_size="7b"):
+    assert model_size in ["7b", "32b"], "model_size must be either '7b' or '32b'"
     plt.rcParams["font.size"] = 18
     plt.figure(figsize=(12, 6))
     plt.plot(
-        cache["mean_onl"], label=f'On-policy. Cum. reward={int(sum(cache["mean_onl"]))}'
+        cache[f"mean_pretrain_{model_size}_1000_pre_10"],
+        label=f'LORO. Cum. reward={int(sum(cache[f"mean_pretrain_{model_size}_1000_pre_10"]))}',
+    )
+    plt.fill_between(
+        cache["x"],
+        cache[f"mean_pretrain_{model_size}_1000_pre_10"]
+        - cache[f"std_pretrain_{model_size}_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_pretrain_{model_size}_1000_pre_10"]
+        + cache[f"std_pretrain_{model_size}_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        alpha=0.3,
+    )
+    plt.plot(
+        cache["mean_onl"], label=f'Online RL. Cum. reward={int(sum(cache["mean_onl"]))}'
     )
     plt.fill_between(
         cache["x"],
@@ -427,27 +450,15 @@ def plot_mix(hyperparams, cache):
         alpha=0.3,
     )
     plt.plot(
-        cache["mean_pretrain_7b_3000_pre_10"],
-        label=f'LORO. Cum. reward={int(sum(cache["mean_pretrain_7b_3000_pre_10"]))}',
+        cache[f"mean_mix_{model_size}_pre_10"],
+        label=f'Mix data w/o pretrain. Cum. reward={int(sum(cache[f"mean_mix_{model_size}_pre_10"]))}',
     )
     plt.fill_between(
         cache["x"],
-        cache["mean_pretrain_7b_3000_pre_10"]
-        - cache["std_pretrain_7b_3000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        cache["mean_pretrain_7b_3000_pre_10"]
-        + cache["std_pretrain_7b_3000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        alpha=0.3,
-    )
-    plt.plot(
-        cache["mean_mix_7b_pre_10"],
-        label=f'Mix data w/o pretrain. Cum. reward={int(sum(cache["mean_mix_7b_pre_10"]))}',
-    )
-    plt.fill_between(
-        cache["x"],
-        cache["mean_mix_7b_pre_10"]
-        - cache["std_mix_7b_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        cache["mean_mix_7b_pre_10"]
-        + cache["std_mix_7b_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_mix_{model_size}_pre_10"]
+        - cache[f"std_mix_{model_size}_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_mix_{model_size}_pre_10"]
+        + cache[f"std_mix_{model_size}_pre_10"] / np.sqrt(hyperparams["n_exp"]),
         alpha=0.3,
     )
 
@@ -458,12 +469,12 @@ def plot_mix(hyperparams, cache):
         plt.ylim(-500, 0)
     if "MountainCar" in hyperparams["env"]:
         plt.ylim(-210, -50)
-    if "MountainCar" in hyperparams["env"]:
+    if "MountainCar" in hyperparams["env"] or "RepresentedPong" in hyperparams["env"]:
         plt.legend(loc="upper right")
     else:
         plt.legend(loc="lower right")
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_mix.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_mix{"_awac" if hyperparams["awac"] else ""}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -476,8 +487,20 @@ def plot_sft_lcot(hyperparams, cache):
     try:
         plt.figure(figsize=(12, 6))
         plt.plot(
+            cache["mean_pretrain_7b_1000_pre_10"],
+            label=f'LORO. Cum. reward={int(sum(cache["mean_pretrain_7b_1000_pre_10"]))}',
+        )
+        plt.fill_between(
+            cache["x"],
+            cache["mean_pretrain_7b_1000_pre_10"]
+            - cache["std_pretrain_7b_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+            cache["mean_pretrain_7b_1000_pre_10"]
+            + cache["std_pretrain_7b_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+            alpha=0.3,
+        )
+        plt.plot(
             cache["mean_onl"],
-            label=f'On-policy. Cum. reward={int(sum(cache["mean_onl"]))}',
+            label=f'Online RL. Cum. reward={int(sum(cache["mean_onl"]))}',
         )
         plt.fill_between(
             cache["x"],
@@ -486,27 +509,15 @@ def plot_sft_lcot(hyperparams, cache):
             alpha=0.3,
         )
         plt.plot(
-            cache["mean_pretrain_7b_3000_pre_10"],
-            label=f'LORO. Cum. reward={int(sum(cache["mean_pretrain_7b_3000_pre_10"]))}',
+            cache["mean_pretrain_7b_1000_pre_10SFT"],
+            label=f'SFT. Cum. reward={int(sum(cache["mean_pretrain_7b_1000_pre_10SFT"]))}',
         )
         plt.fill_between(
             cache["x"],
-            cache["mean_pretrain_7b_3000_pre_10"]
-            - cache["std_pretrain_7b_3000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-            cache["mean_pretrain_7b_3000_pre_10"]
-            + cache["std_pretrain_7b_3000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-            alpha=0.3,
-        )
-        plt.plot(
-            cache["mean_pretrain_7b_3000_pre_10SFT"],
-            label=f'SFT. Cum. reward={int(sum(cache["mean_pretrain_7b_3000_pre_10SFT"]))}',
-        )
-        plt.fill_between(
-            cache["x"],
-            cache["mean_pretrain_7b_3000_pre_10SFT"]
-            - cache["std_pretrain_7b_3000_pre_10SFT"] / np.sqrt(hyperparams["n_exp"]),
-            cache["mean_pretrain_7b_3000_pre_10SFT"]
-            + cache["std_pretrain_7b_3000_pre_10SFT"] / np.sqrt(hyperparams["n_exp"]),
+            cache["mean_pretrain_7b_1000_pre_10SFT"]
+            - cache["std_pretrain_7b_1000_pre_10SFT"] / np.sqrt(hyperparams["n_exp"]),
+            cache["mean_pretrain_7b_1000_pre_10SFT"]
+            + cache["std_pretrain_7b_1000_pre_10SFT"] / np.sqrt(hyperparams["n_exp"]),
             alpha=0.3,
         )
 
@@ -525,33 +536,33 @@ def plot_sft_lcot(hyperparams, cache):
         pass
     try:
         plt.plot(
-            cache["mean_pretrain_7b_3000_pre_10DS"],
-            label=f'Long-CoT 7B. Cum. reward={int(sum(cache["mean_pretrain_7b_3000_pre_10DS"]))}',
+            cache["mean_pretrain_7b_1000_pre_10DS"],
+            label=f'Long-CoT 7B. Cum. reward={int(sum(cache["mean_pretrain_7b_1000_pre_10DS"]))}',
         )
         plt.fill_between(
             cache["x"],
-            cache["mean_pretrain_7b_3000_pre_10DS"]
-            - cache["std_pretrain_7b_3000_pre_10DS"] / np.sqrt(hyperparams["n_exp"]),
-            cache["mean_pretrain_7b_3000_pre_10DS"]
-            + cache["std_pretrain_7b_3000_pre_10DS"] / np.sqrt(hyperparams["n_exp"]),
+            cache["mean_pretrain_7b_1000_pre_10DS"]
+            - cache["std_pretrain_7b_1000_pre_10DS"] / np.sqrt(hyperparams["n_exp"]),
+            cache["mean_pretrain_7b_1000_pre_10DS"]
+            + cache["std_pretrain_7b_1000_pre_10DS"] / np.sqrt(hyperparams["n_exp"]),
             alpha=0.3,
         )
         plt.plot(
-            cache["mean_pretrain_14b_3000_pre_10DS"],
-            label=f'Long-CoT 14B. Cum. reward={int(sum(cache["mean_pretrain_14b_3000_pre_10DS"]))}',
+            cache["mean_pretrain_14b_1000_pre_10DS"],
+            label=f'Long-CoT 14B. Cum. reward={int(sum(cache["mean_pretrain_14b_1000_pre_10DS"]))}',
         )
         plt.fill_between(
             cache["x"],
-            cache["mean_pretrain_14b_3000_pre_10DS"]
-            - cache["std_pretrain_14b_3000_pre_10DS"] / np.sqrt(hyperparams["n_exp"]),
-            cache["mean_pretrain_14b_3000_pre_10DS"]
-            + cache["std_pretrain_14b_3000_pre_10DS"] / np.sqrt(hyperparams["n_exp"]),
+            cache["mean_pretrain_14b_1000_pre_10DS"]
+            - cache["std_pretrain_14b_1000_pre_10DS"] / np.sqrt(hyperparams["n_exp"]),
+            cache["mean_pretrain_14b_1000_pre_10DS"]
+            + cache["std_pretrain_14b_1000_pre_10DS"] / np.sqrt(hyperparams["n_exp"]),
             alpha=0.3,
         )
     except:
         pass
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_sft_lcot.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_sft_lcot{"_awac" if hyperparams["awac"] else ""}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -601,16 +612,6 @@ def plot_model_size(hyperparams, cache):
             smooth_mean_loro32 = rbf(cache["x"])
 
             axs[j, i].plot(
-                smooth_mean_onl,
-                label=f'On-policy. Cum. reward={int(sum(cache["mean_onl"]))}',
-            )
-            axs[j, i].fill_between(
-                cache["x"],
-                smooth_mean_onl - std_onl,
-                smooth_mean_onl + std_onl,
-                alpha=0.3,
-            )
-            axs[j, i].plot(
                 smooth_mean_loro7, label=f"LORO 7B. Cum. reward={int(sum(mean_loro7))}"
             )
             axs[j, i].fill_between(
@@ -629,6 +630,16 @@ def plot_model_size(hyperparams, cache):
                 smooth_mean_loro32 + std_loro32,
                 alpha=0.3,
             )
+            axs[j, i].plot(
+                smooth_mean_onl,
+                label=f'Online RL. Cum. reward={int(sum(cache["mean_onl"]))}',
+            )
+            axs[j, i].fill_between(
+                cache["x"],
+                smooth_mean_onl - std_onl,
+                smooth_mean_onl + std_onl,
+                alpha=0.3,
+            )
 
             axs[j, i].set_title(f"Smoothed pretrain {i+1}0 eps, {pretrain_step} steps")
             axs[j, i].set_xlabel("# of episodes")
@@ -643,7 +654,7 @@ def plot_model_size(hyperparams, cache):
     else:
         axs[0, 0].legend(loc="lower right")
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_model_size.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_model_size{"_awac" if hyperparams["awac"] else ""}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -694,16 +705,6 @@ def plot_pretrain_step(hyperparams, cache):
             smooth_mean_loro_3k = rbf(cache["x"])
 
             axs[j, i].plot(
-                smooth_mean_onl,
-                label=f'On-policy. Cum. reward={int(sum(cache["mean_onl"]))}',
-            )
-            axs[j, i].fill_between(
-                cache["x"],
-                smooth_mean_onl - std_onl,
-                smooth_mean_onl + std_onl,
-                alpha=0.3,
-            )
-            axs[j, i].plot(
                 smooth_mean_loro_1k,
                 label=f"LORO 1k pretrain steps. Cum. reward={int(sum(mean_loro_1k))}",
             )
@@ -723,6 +724,16 @@ def plot_pretrain_step(hyperparams, cache):
                 smooth_mean_loro_3k + std_loro_3k,
                 alpha=0.3,
             )
+            axs[j, i].plot(
+                smooth_mean_onl,
+                label=f'Online RL. Cum. reward={int(sum(cache["mean_onl"]))}',
+            )
+            axs[j, i].fill_between(
+                cache["x"],
+                smooth_mean_onl - std_onl,
+                smooth_mean_onl + std_onl,
+                alpha=0.3,
+            )
 
             axs[j, i].set_title(f"Smoothed pretrain {i+1}0 eps, {model_size}B")
             axs[j, i].set_xlabel("# of episodes")
@@ -737,7 +748,7 @@ def plot_pretrain_step(hyperparams, cache):
     else:
         axs[0, 0].legend(loc="lower right")
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_pretrain_step.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_pretrain_step{"_awac" if hyperparams["awac"] else ""}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -803,15 +814,6 @@ def plot_pretrain_eps(hyperparams, cache):
             smooth_mean_loro_30 = rbf(cache["x"])
 
             axs[j, i].plot(
-                smooth_mean_onl, label=f"On-policy. Cum. reward={int(sum(mean_onl))}"
-            )
-            axs[j, i].fill_between(
-                cache["x"],
-                smooth_mean_onl - std_onl,
-                smooth_mean_onl + std_onl,
-                alpha=0.3,
-            )
-            axs[j, i].plot(
                 smooth_mean_loro_10,
                 label=f"LORO 10 pretrain eps. Cum. reward={int(sum(mean_loro_10))}",
             )
@@ -841,6 +843,15 @@ def plot_pretrain_eps(hyperparams, cache):
                 smooth_mean_loro_30 + std_loro_30,
                 alpha=0.3,
             )
+            axs[j, i].plot(
+                smooth_mean_onl, label=f"Online RL. Cum. reward={int(sum(mean_onl))}"
+            )
+            axs[j, i].fill_between(
+                cache["x"],
+                smooth_mean_onl - std_onl,
+                smooth_mean_onl + std_onl,
+                alpha=0.3,
+            )
 
             axs[j, i].set_title(
                 f"Smoothed pretrain {pretrain_step} steps, {model_size}B"
@@ -857,7 +868,7 @@ def plot_pretrain_eps(hyperparams, cache):
     else:
         axs[0, 0].legend(loc="lower right")
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_pretrain_eps.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_pretrain_eps{"_awac" if hyperparams["awac"] else ""}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -890,9 +901,13 @@ def plot_pretrain_big(hyperparams, cache):
             std_rand = cache[f"std_rand_pretrain_{pretrain_step}_pre_{i+1}0"] / np.sqrt(
                 hyperparams["n_exp"]
             )
+            axs[j, i].plot(mean_loro, label=f"LORO. Cum. reward={int(sum(mean_loro))}")
+            axs[j, i].fill_between(
+                cache["x"], mean_loro - std_loro, mean_loro + std_loro, alpha=0.3
+            )
             axs[j, i].plot(
                 cache["mean_onl"],
-                label=f'On-policy. Cum. reward={int(sum(cache["mean_onl"]))}',
+                label=f'Online RL. Cum. reward={int(sum(cache["mean_onl"]))}',
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -900,13 +915,9 @@ def plot_pretrain_big(hyperparams, cache):
                 cache["mean_onl"] + cache["std_onl"] / np.sqrt(hyperparams["n_exp"]),
                 alpha=0.3,
             )
-            axs[j, i].plot(mean_loro, label=f"LORO. Cum. reward={int(sum(mean_loro))}")
-            axs[j, i].fill_between(
-                cache["x"], mean_loro - std_loro, mean_loro + std_loro, alpha=0.3
-            )
             axs[j, i].plot(
                 mean_on_pol,
-                label=f"Pretrain w/ On-policy data. Cum. reward={int(sum(mean_on_pol))}",
+                label=f"Pretrain w/ Online RL data. Cum. reward={int(sum(mean_on_pol))}",
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -937,7 +948,7 @@ def plot_pretrain_big(hyperparams, cache):
     else:
         axs[0, 0].legend(loc="lower right")
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_pretrain_big.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_pretrain_big{"_awac" if hyperparams["awac"] else ""}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -987,22 +998,22 @@ def plot_sft_lcot_big(hyperparams, cache):
                 smooth_mean_sft = rbf(cache["x"])
 
                 axs[j, i].plot(
-                    smooth_mean_onl,
-                    label=f'On-policy. Cum. reward={int(sum(cache["mean_onl"]))}',
-                )
-                axs[j, i].fill_between(
-                    cache["x"],
-                    smooth_mean_onl - cache["std_onl"] / np.sqrt(hyperparams["n_exp"]),
-                    smooth_mean_onl + cache["std_onl"] / np.sqrt(hyperparams["n_exp"]),
-                    alpha=0.3,
-                )
-                axs[j, i].plot(
                     smooth_mean_loro, label=f"LORO. Cum. reward={int(sum(mean_loro))}"
                 )
                 axs[j, i].fill_between(
                     cache["x"],
                     smooth_mean_loro - std_loro,
                     smooth_mean_loro + std_loro,
+                    alpha=0.3,
+                )
+                axs[j, i].plot(
+                    smooth_mean_onl,
+                    label=f'Online RL. Cum. reward={int(sum(cache["mean_onl"]))}',
+                )
+                axs[j, i].fill_between(
+                    cache["x"],
+                    smooth_mean_onl - cache["std_onl"] / np.sqrt(hyperparams["n_exp"]),
+                    smooth_mean_onl + cache["std_onl"] / np.sqrt(hyperparams["n_exp"]),
                     alpha=0.3,
                 )
                 axs[j, i].plot(
@@ -1077,7 +1088,7 @@ def plot_sft_lcot_big(hyperparams, cache):
     else:
         axs[0, 0].legend(loc="lower right")
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_sft_lcot_bigs.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_sft_lcot_bigs{"_awac" if hyperparams["awac"] else ""}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -1420,10 +1431,7 @@ def plot_observation_traces(dataset, width, height, episode_indices=None, figsiz
     # Disable the default grid to avoid center values
     ax.grid(False)
     
-    # Add legend (only for new figures)
-    # if len(episode_indices) > 1 and (fig is None or ax is None):
-    #     ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    # Legend removed - will be created as separate rectangle image
     
     # Apply tight_layout only for new figures
     # if fig is None or ax is None:
@@ -1436,4 +1444,93 @@ def plot_observation_traces(dataset, width, height, episode_indices=None, figsiz
             pad_inches=0.1,
         )
     
+    return fig, ax
+
+def create_legend_rectangle(x_name, y_name, figsize=(12, 1.5), fontsize=9, save_path=None, marker_sizes=(8, 12, 8, 12), text_offset=0.035):
+    """
+    Create a long, thin rectangle legend with four items: X Start, X End, Y Start, Y End.
+    
+    Args:
+        x_name: Name for X dataset (e.g., "Qwen 7B")
+        y_name: Name for Y dataset (e.g., "LORO")
+        figsize: Figure size as tuple (width, height)
+        marker_sizes: Marker sizes in points. Can be a single number, a 2-tuple
+            for (Start, End) repeated for both X and Y, or a 4-tuple/list for
+            [X Start, X End, Y Start, Y End]
+        text_offset: Horizontal space between marker and text in axes fraction
+        save_path: Path to save the legend image. If None, doesn't save.
+    
+    Returns:
+        fig: matplotlib figure object
+        ax: matplotlib axes object
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    # Remove all extra paddings/margins so content fills the figure
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    ax.set_position([0, 0, 1, 1])
+    ax.margins(x=0, y=0)
+
+    # Define labels and marker styles
+    labels = [f"{x_name} Start", f"{x_name} End", f"{y_name} Start", f"{y_name} End"]
+    colors = ['red', 'red', 'green', 'green']
+    markers = ['o', '+', 'o', '+']
+
+    # Normalize marker_sizes input to a list of 4 sizes
+    if isinstance(marker_sizes, (int, float)):
+        ms = [marker_sizes] * 4
+    else:
+        ms = list(marker_sizes)
+        if len(ms) == 2:
+            ms = [ms[0], ms[1], ms[0], ms[1]]
+        elif len(ms) != 4:
+            ms = [8, 12, 8, 12]
+
+    # Y position for markers and labels (centered vertically)
+    y_marker = 0.5
+
+    positions = [0.03, 0.23+0.03, 0.53, 0.73]
+
+    # Create each legend item
+    for pos, label, color, marker, size in zip(positions, labels, colors, markers, ms):
+        # Draw the marker using scatter so circle stays circular regardless of aspect
+        if marker == 'o':
+            ax.scatter([pos], [y_marker],
+                       s=size**2,
+                       c=[color],
+                       marker='o',
+                       edgecolors='black',
+                       linewidths=1,
+                       alpha=0.9)
+        else:
+            ax.scatter([pos], [y_marker],
+                       s=size**2,
+                       c=[color],
+                       marker='+',
+                       linewidths=2,
+                       alpha=0.9)
+
+        # Determine text position: prefer to the right, but keep inside bounds
+        if pos < 0.85:
+            text_x = pos + text_offset
+            ha = 'left'
+        else:
+            text_x = pos - text_offset
+            ha = 'right'
+
+        ax.text(text_x, y_marker,
+                label,
+                va='center',
+                ha=ha,
+                fontsize=fontsize,
+                fontweight='bold')
+
+    # Configure axes to be wide and thin, no forced equal aspect
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis('off')
+
+    # Save if path provided
+    if save_path is not None:
+        plt.savefig(save_path, format='pdf', dpi=300, bbox_inches='tight', pad_inches=0)
+
     return fig, ax

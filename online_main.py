@@ -91,7 +91,7 @@ def run_exp_and_save(
             cache = run_exp(n_pretrain_steps, n_pretrain_eps, n_online_eps, cache, hyperparams, explorer, online_training_fn)
 
     with open(
-        f'data/cache_{hyperparams["env"].split("-")[0]}_on_policy_pretrain_exp{suffix}.pkl',
+        f'data/cache_{hyperparams["env"].split("-")[0]}_on_policy_pretrain_exp{suffix}{"_awac" if hyperparams["awac"] else ""}.pkl',
         "wb",
     ) as file:
         pickle.dump(cache, file)
@@ -153,7 +153,7 @@ def _online_training_from_scratch(hyperparams, explorer, cache):
     return cache
 
 
-def _online_training_with_mixed_pretraining_data(hyperparams, explorer, cache):
+def _online_training_with_mixed_pretraining_data(hyperparams, explorer, cache, model_size):
     # assert hyperparams["data_path"] is not None, "data_path should not be None when training with mixed pretraining data"
     # assert hyperparams["n_pretrain_eps"] > 0, "n_pretrain_eps should be larger than 0 when training with mixed pretraining data"
     tmp_env, _ = get_env_and_eval_env(hyperparams["env"], hyperparams["seed"]) # just use tmp_env to initialize the buffer
@@ -170,7 +170,7 @@ def _online_training_with_mixed_pretraining_data(hyperparams, explorer, cache):
     n_rollouts = hyperparams["n_online_eps"] # Just mix the pretraining data with the online data, so only rollout for n_online_eps
 
     for i in range(hyperparams["n_exp"]):
-        cache[f"mix_32b_{i}"], cache[f"mix_32b_{i}_dataset"], _ = rollout_and_eval(hyperparams["max_episode_len"], hyperparams["env"], explorer, model, buffer, n_rollouts, hyperparams["seed"]+i)
+        cache[f"mix_{model_size}_{i}"], cache[f"mix_{model_size}_{i}_dataset"], _ = rollout_and_eval(hyperparams["max_episode_len"], hyperparams["env"], explorer, model, buffer, n_rollouts, hyperparams["seed"]+i)
     return cache
 
 
@@ -183,7 +183,7 @@ def _online_training(hyperparams, explorer, cache, data_path, model_size, suffix
         cache = _online_training_from_scratch(hyperparams, explorer, cache)
 
     # Mixed pretraining and online data.
-    cache = _online_training_with_mixed_pretraining_data(hyperparams, explorer, cache)
+    cache = _online_training_with_mixed_pretraining_data(hyperparams, explorer, cache, model_size)
     return cache
 
 if __name__ == "__main__":
@@ -228,12 +228,14 @@ if __name__ == "__main__":
                        help="Use DeepSeek long CoT data paths")
     parser.add_argument("--n_pretrain_steps", type=int, default=1000,
                        help="Number of pretraining steps")
-    parser.add_argument("--pretraining_exp", action="store_true", default=False,
-                       help="Run pretraining experiments (run_exp_and_save calls)")
     parser.add_argument("--awac", action="store_true", default=False,
                        help="Using AWAC model")
     parser.add_argument("--n_steps_per_epoch", type=int, default=200,
                        help="Number of steps per epoch for training")
+    parser.add_argument("--online_exp", action="store_true", default=False,
+                       help="Run the main fine-tune experiments")
+    parser.add_argument("--online_rand", action="store_true", default=False,
+                       help="Run the random and online fine-tune experiments")
     
     args = parser.parse_args()
     
@@ -254,9 +256,10 @@ if __name__ == "__main__":
         "sft": args.sft,
         "long_cot": args.long_cot,
         "n_pretrain_steps": args.n_pretrain_steps,
-        "pretraining_exp": args.pretraining_exp,
         "awac": args.awac,
         "n_steps_per_epoch": args.n_steps_per_epoch,
+        "online_exp": args.online_exp,
+        "online_rand": args.online_rand,
     }
 
     # setup explorers
@@ -272,16 +275,18 @@ if __name__ == "__main__":
     timing_data = {}
     
     # Time _online_training for 32b model
-    if path_32b is not None:
+    if hyperparams["online_exp"] and path_32b is not None:
         print("Starting _online_training for 32b model...")
         start_time = time.time()
         cache = _online_training(hyperparams, explorer, cache, path_32b, "32b", suffix)
         end_time = time.time()
         timing_data['_online_training_32b'] = end_time - start_time
         print(f"_online_training for 32b model completed in {timing_data['_online_training_32b']:.2f} seconds")
+    elif not hyperparams["online_exp"]:
+        print("Skipping the main fine-tune experiments (online_exp=False)")
 
     # Time _online_training for 7b model
-    if path_7b is not None:
+    if hyperparams["online_exp"] and path_7b is not None:
         if "online_0" in cache.keys():
             skip_from_scratch = True
         else:
@@ -294,13 +299,13 @@ if __name__ == "__main__":
         print(f"_online_training for 7b model completed in {timing_data['_online_training_7b']:.2f} seconds")
 
     with open(
-        f'data/cache_{hyperparams["env"].split("-")[0]}_Neps_{hyperparams["n_pretrain_eps"]}{suffix}.pkl',
+        f'data/cache_{hyperparams["env"].split("-")[0]}_Neps_{hyperparams["n_pretrain_eps"]}{suffix}{"_awac" if hyperparams["awac"] else ""}.pkl',
         "wb",
     ) as file:
         pickle.dump(cache, file)
 
     # New experiments to test pretraining with online RL and Random data
-    if hyperparams["pretraining_exp"]:
+    if hyperparams["online_rand"]:
         print("Starting run_exp_and_save with random data...")
         start_time = time.time()
         run_exp_and_save(hyperparams, explorer, is_rand=True)
@@ -315,7 +320,7 @@ if __name__ == "__main__":
         timing_data['run_exp_and_save_pretrain'] = end_time - start_time
         print(f"run_exp_and_save with pretrain data completed in {timing_data['run_exp_and_save_pretrain']:.2f} seconds")
     else:
-        print("Skipping pretraining experiments (pretraining_exp=False)")
+        print("Skipping random and online fine-tune experiments (online_rand=False)")
     
     # Write timing log with hyperparameters
     write_timing_log(hyperparams, timing_data)

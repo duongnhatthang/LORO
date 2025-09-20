@@ -29,17 +29,18 @@ LEARNING_RATE=5e-5
 GAMMA=0.99
 TARGET_UPDATE_INTERVAL=1000
 N_PRETRAIN_STEPS=1000
-PRETRAINING_EXP=true
 LONG_COT=false
 AWAC=false
 N_STEPS_PER_EPOCH=200
+ONLINE_EXP=true
+ONLINE_RAND=true
 
 # Function to display usage
 usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --model_name_1 MODEL         First model name for LLM (default: $MODEL_NAME_1)"
+    echo "  --model_name_1 MODEL         First model name for LLM, or 'none' to skip (default: $MODEL_NAME_1)"
     echo "  --model_name_2 MODEL         Second model name for LLM, or 'none' to skip (default: $MODEL_NAME_2)"
     echo "  --env ENV                    Environment name (default: $ENV)"
     echo "  --n_episodes N               Number of episodes for LLM training (default: $N_EPISODES)"
@@ -62,10 +63,11 @@ usage() {
     echo "  --gamma FLOAT                Discount factor (default: $GAMMA)"
     echo "  --target_update_interval N   Target network update interval (default: $TARGET_UPDATE_INTERVAL)"
     echo "  --n_pretrain_steps N         Number of pretraining steps (default: $N_PRETRAIN_STEPS)"
-    echo "  --pretraining_exp            Run pretraining experiments (default: true)"
     echo "  --long_cot                   Use DeepSeek long CoT data paths (default: false)"
     echo "  --awac                       Use AWAC model instead of SAC or DoubleDQN (default: false)"
     echo "  --n_steps_per_epoch N        Number of steps per epoch for training (default: $N_STEPS_PER_EPOCH)"
+    echo "  --online_exp                 Run the main fine-tune experiments (default: true)"
+    echo "  --online_rand                Run the random and online fine-tune experiments (default: true)"
     echo "  --help                       Show this help message"
     echo ""
     echo "Examples:"
@@ -170,10 +172,6 @@ while [[ $# -gt 0 ]]; do
             N_PRETRAIN_STEPS="$2"
             shift 2
             ;;
-        --pretraining_exp)
-            PRETRAINING_EXP=true
-            shift
-            ;;
         --long_cot)
             LONG_COT=true
             shift
@@ -185,6 +183,14 @@ while [[ $# -gt 0 ]]; do
         --n_steps_per_epoch)
             N_STEPS_PER_EPOCH="$2"
             shift 2
+            ;;
+        --online_exp)
+            ONLINE_EXP=true
+            shift
+            ;;
+        --online_rand)
+            ONLINE_RAND=true
+            shift
             ;;
         --help)
             usage
@@ -219,6 +225,8 @@ echo "Seed: $SEED"
 echo "SFT: $SFT"
 echo "GPU: $GPU"
 echo "AWAC: $AWAC"
+echo "Online Exp: $ONLINE_EXP"
+echo "Online Rand: $ONLINE_RAND"
 echo "=========================================="
 
 # Build base arguments for llm_main.py (without model_name)
@@ -242,23 +250,33 @@ fi
 if [ "$AWAC" = true ]; then
     ONLINE_BASE_ARGS="$ONLINE_BASE_ARGS --awac"
 fi
-
-# Step 1: Run LLM training with Model 1
-echo ""
-echo "Step 1: Running LLM training with Model 1..."
-echo "Command: python llm_main.py --model_name $MODEL_NAME_1 $LLM_BASE_ARGS"
-echo ""
-
-python llm_main.py --model_name "$MODEL_NAME_1" $LLM_BASE_ARGS
-
-if [ $? -ne 0 ]; then
-    echo "Error: LLM training with Model 1 failed!"
-    exit 1
+if [ "$ONLINE_EXP" = true ]; then
+    ONLINE_BASE_ARGS="$ONLINE_BASE_ARGS --online_exp"
+fi
+if [ "$ONLINE_RAND" = true ]; then
+    ONLINE_BASE_ARGS="$ONLINE_BASE_ARGS --online_rand"
 fi
 
-echo ""
-echo "LLM training with Model 1 completed successfully!"
-echo ""
+# Step 1: Run LLM training with Model 1 (skip if MODEL_NAME_1 is "none")
+if [ "$MODEL_NAME_1" != "none" ]; then
+    echo "Step 1: Running LLM training with Model 1..."
+    echo "Command: python llm_main.py --model_name $MODEL_NAME_1 $LLM_BASE_ARGS"
+    echo ""
+
+    python llm_main.py --model_name "$MODEL_NAME_1" $LLM_BASE_ARGS
+
+    if [ $? -ne 0 ]; then
+        echo "Error: LLM training with Model 1 failed!"
+        exit 1
+    fi
+
+    echo ""
+    echo "LLM training with Model 1 completed successfully!"
+    echo ""
+else
+    echo "Step 1: Skipping LLM training with Model 1 (MODEL_NAME_1 is set to 'none')"
+    echo ""
+fi
 
 # Step 2: Run LLM training with Model 2 (skip if MODEL_NAME_2 is "none")
 if [ "$MODEL_NAME_2" != "none" ]; then
@@ -283,7 +301,7 @@ fi
 
 # Step 3: Run online training with first pair
 echo "Step 3: Running online training with first pair..."
-ONLINE_ARGS_1="$ONLINE_BASE_ARGS --n_online_eps $N_ONLINE_EPS_1 --n_pretrain_eps $N_PRETRAIN_EPS_1 --pretraining_exp"
+ONLINE_ARGS_1="$ONLINE_BASE_ARGS --n_online_eps $N_ONLINE_EPS_1 --n_pretrain_eps $N_PRETRAIN_EPS_1"
 
 echo "Command: python online_main.py $ONLINE_ARGS_1"
 echo ""
@@ -337,7 +355,9 @@ echo "LORO Pipeline completed successfully!"
 echo "=========================================="
 echo ""
 echo "Generated files:"
-echo "- LLM dataset (Model 1): data/${ENV%%-*}_${MODEL_NAME_1##*/}_Neps_${N_EPISODES}$([ "$SFT" = true ] && echo "SFT" || echo "").pkl"
+if [ "$MODEL_NAME_1" != "none" ]; then
+    echo "- LLM dataset (Model 1): data/${ENV%%-*}_${MODEL_NAME_1##*/}_Neps_${N_EPISODES}$([ "$SFT" = true ] && echo "SFT" || echo "").pkl"
+fi
 if [ "$MODEL_NAME_2" != "none" ]; then
     echo "- LLM dataset (Model 2): data/${ENV%%-*}_${MODEL_NAME_2##*/}_Neps_${N_EPISODES}$([ "$SFT" = true ] && echo "SFT" || echo "").pkl"
 fi

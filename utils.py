@@ -11,35 +11,15 @@ import json
 
 def get_llm_data_paths(env, sft=False, long_cot=False):
     env_name = env.split("-")[0]
-    if env_name == "Pendulum":
-        path_7b = f"data/{env_name}_Qwen2.5-7B-Instruct_Neps_30.pkl"
-        path_32b = f"data/{env_name}_Qwen2.5-32B-Instruct_Neps_30.pkl"
-    elif env_name == "CliffWalking":
+    path_7b = f"data/{env_name}_Qwen2.5-7B-Instruct_Neps_30.pkl"
+    path_32b = f"data/{env_name}_Qwen2.5-32B-Instruct_Neps_30.pkl"
+    if env_name == "Pendulum" or env_name == "CliffWalking" or env_name == "FrozenLake":
         if sft:
             path_7b = f"data/{env_name}_Qwen2.5-7B-Instruct_Neps_30SFT.pkl"
             path_32b = None
-        else:
-            path_7b = f"data/{env_name}_Qwen2.5-7B-Instruct_Neps_30.pkl"
-            path_32b = f"data/{env_name}_Qwen2.5-32B-Instruct_Neps_30.pkl"
-    elif env_name == "FrozenLake":
-        if sft:
-            path_7b = f"data/{env_name}_Qwen2.5-7B-Instruct_Neps_30SFT.pkl"
-            path_32b = None
-        elif long_cot:
-            path_7b = f"data/{env_name}_DeepSeek-R1-Distill-Qwen-7B_Neps_30.pkl"  # FrozenLake DS 7b
-            path_32b = f"data/{env_name}_DeepSeek-R1-Distill-Qwen-14B_Neps_30.pkl"  # FrozenLake DS 14b
-        else:
-            path_7b = f"data/{env_name}_Qwen2.5-7B-Instruct_Neps_30.pkl"
-            path_32b = f"data/{env_name}_Qwen2.5-32B-Instruct_Neps_30.pkl"
-    elif env_name == "CartPole":
-        path_7b = f"data/{env_name}_Qwen2.5-7B-Instruct_Neps_30.pkl"
-        path_32b = f"data/{env_name}_Qwen2.5-32B-Instruct_Neps_30.pkl"
-    elif env_name == "MountainCar":
-        path_7b = f"data/{env_name}_Qwen2.5-7B-Instruct_Neps_30.pkl"
-        path_32b = f"data/{env_name}_Qwen2.5-32B-Instruct_Neps_30.pkl"
-    elif env_name == "RepresentedPong":
-        path_7b = f"data/{env_name}_Qwen2.5-7B-Instruct_Neps_30.pkl"
-        path_32b = f"data/{env_name}_Qwen2.5-32B-Instruct_Neps_30.pkl"
+    if env_name == "FrozenLake" and long_cot:
+        path_7b = f"data/{env_name}_DeepSeek-R1-Distill-Qwen-7B_Neps_30.pkl"  # FrozenLake DS 7b
+        path_32b = f"data/{env_name}_DeepSeek-R1-Distill-Qwen-14B_Neps_30.pkl"  # FrozenLake DS 14b
     return path_7b, path_32b
 
 
