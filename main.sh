@@ -209,7 +209,7 @@ mkdir -p data
 mkdir -p logs
 
 echo "=========================================="
-echo "LORO Pipeline Execution"
+echo "LLM-pretrain Pipeline Execution"
 echo "=========================================="
 echo "Environment: $ENV"
 echo "Model 1: $MODEL_NAME_1"
@@ -351,7 +351,7 @@ fi
 
 echo ""
 echo "=========================================="
-echo "LORO Pipeline completed successfully!"
+echo "LLM-pretrain Pipeline completed successfully!"
 echo "=========================================="
 echo ""
 echo "Generated files:"

@@ -303,7 +303,7 @@ def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random, model_size="7b
     plt.figure(figsize=(12, 6))
     plt.plot(
         cache[f"mean_pretrain_{model_size}_1000_pre_10"],
-        label=f'LORO. Cum. reward={int(sum(cache[f"mean_pretrain_{model_size}_1000_pre_10"]))}',
+        label=f'LLM-pretrain',
     )
     plt.fill_between(
         cache["x"],
@@ -314,7 +314,7 @@ def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random, model_size="7b
         alpha=0.3,
     )
     plt.plot(
-        cache["mean_onl"], label=f'Online RL. Cum. reward={int(sum(cache["mean_onl"]))}'
+        cache["mean_onl"], label=f'Online RL'
     )
     plt.fill_between(
         cache["x"],
@@ -323,12 +323,12 @@ def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random, model_size="7b
         alpha=0.3,
     )
 
-    plt.plot(Qwen_7B, label=f"Qwen-7B. Cum. reward={int(sum(Qwen_7B))}", linestyle=":")
+    plt.plot(Qwen_7B, label=f"Qwen-7B", linestyle=":")
     plt.plot(
-        Qwen_32B, label=f"Qwen-32B. Cum. reward={int(sum(Qwen_32B))}", linestyle=":"
+        Qwen_32B, label=f"Qwen-32B", linestyle=":"
     )
     plt.plot(
-        mean_random, label=f"Random. Cum. reward={int(sum(mean_random))}", linestyle=":"
+        mean_random, label=f"Random", linestyle=":"
     )
 
     plt.title(f'{hyperparams["env"].split("-")[0]}')
@@ -360,7 +360,7 @@ def plot_pretrain(hyperparams, cache, model_size="7b"):
     plt.figure(figsize=(12, 6))
     plt.plot(
         cache[f"mean_pretrain_{model_size}_1000_pre_10"],
-        label=f'LORO. Cum. reward={int(sum(cache[f"mean_pretrain_{model_size}_1000_pre_10"]))}',
+        label=f'LLM-pretrain',
     )
     plt.fill_between(
         cache["x"],
@@ -371,7 +371,7 @@ def plot_pretrain(hyperparams, cache, model_size="7b"):
         alpha=0.3,
     )
     plt.plot(
-        cache["mean_onl"], label=f'Online RL. Cum. reward={int(sum(cache["mean_onl"]))}'
+        cache["mean_onl"], label=f'Online RL'
     )
     plt.fill_between(
         cache["x"],
@@ -381,7 +381,7 @@ def plot_pretrain(hyperparams, cache, model_size="7b"):
     )
     plt.plot(
         cache["mean_on_pol_pretrain_1000_pre_10"],
-        label=f'Pretrain w/ Online RL data. Cum. reward={int(sum(cache["mean_on_pol_pretrain_1000_pre_10"]))}',
+        label=f'Pretrain w/ Online RL data',
     )
     plt.fill_between(
         cache["x"],
@@ -393,7 +393,7 @@ def plot_pretrain(hyperparams, cache, model_size="7b"):
     )
     plt.plot(
         cache["mean_rand_pretrain_1000_pre_10"],
-        label=f'Pretrain w/ random policy data. Cum. reward={int(sum(cache["mean_rand_pretrain_1000_pre_10"]))}',
+        label=f'Pretrain w/ random policy data',
     )
     plt.fill_between(
         cache["x"],
@@ -430,7 +430,7 @@ def plot_mix(hyperparams, cache, model_size="7b"):
     plt.figure(figsize=(12, 6))
     plt.plot(
         cache[f"mean_pretrain_{model_size}_1000_pre_10"],
-        label=f'LORO. Cum. reward={int(sum(cache[f"mean_pretrain_{model_size}_1000_pre_10"]))}',
+        label=f'LLM-pretrain',
     )
     plt.fill_between(
         cache["x"],
@@ -441,7 +441,7 @@ def plot_mix(hyperparams, cache, model_size="7b"):
         alpha=0.3,
     )
     plt.plot(
-        cache["mean_onl"], label=f'Online RL. Cum. reward={int(sum(cache["mean_onl"]))}'
+        cache["mean_onl"], label=f'Online RL'
     )
     plt.fill_between(
         cache["x"],
@@ -451,7 +451,7 @@ def plot_mix(hyperparams, cache, model_size="7b"):
     )
     plt.plot(
         cache[f"mean_mix_{model_size}_pre_10"],
-        label=f'Mix data w/o pretrain. Cum. reward={int(sum(cache[f"mean_mix_{model_size}_pre_10"]))}',
+        label=f'Mix data w/o pretrain',
     )
     plt.fill_between(
         cache["x"],
@@ -488,7 +488,7 @@ def plot_sft_lcot(hyperparams, cache):
         plt.figure(figsize=(12, 6))
         plt.plot(
             cache["mean_pretrain_7b_1000_pre_10"],
-            label=f'LORO. Cum. reward={int(sum(cache["mean_pretrain_7b_1000_pre_10"]))}',
+            label=f'LLM-pretrain. Cum. reward={int(sum(cache["mean_pretrain_7b_1000_pre_10"]))}',
         )
         plt.fill_between(
             cache["x"],
@@ -612,7 +612,7 @@ def plot_model_size(hyperparams, cache):
             smooth_mean_loro32 = rbf(cache["x"])
 
             axs[j, i].plot(
-                smooth_mean_loro7, label=f"LORO 7B. Cum. reward={int(sum(mean_loro7))}"
+                smooth_mean_loro7, label=f"LLM-pretrain 7B. Cum. reward={int(sum(mean_loro7))}"
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -622,7 +622,7 @@ def plot_model_size(hyperparams, cache):
             )
             axs[j, i].plot(
                 smooth_mean_loro32,
-                label=f"LORO 32B. Cum. reward={int(sum(mean_loro32))}",
+                label=f"LLM-pretrain 32B. Cum. reward={int(sum(mean_loro32))}",
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -706,7 +706,7 @@ def plot_pretrain_step(hyperparams, cache):
 
             axs[j, i].plot(
                 smooth_mean_loro_1k,
-                label=f"LORO 1k pretrain steps. Cum. reward={int(sum(mean_loro_1k))}",
+                label=f"LLM-pretrain 1k pretrain steps. Cum. reward={int(sum(mean_loro_1k))}",
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -716,7 +716,7 @@ def plot_pretrain_step(hyperparams, cache):
             )
             axs[j, i].plot(
                 smooth_mean_loro_3k,
-                label=f"LORO 3k pretrain steps. Cum. reward={int(sum(mean_loro_3k))}",
+                label=f"LLM-pretrain 3k pretrain steps. Cum. reward={int(sum(mean_loro_3k))}",
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -815,7 +815,7 @@ def plot_pretrain_eps(hyperparams, cache):
 
             axs[j, i].plot(
                 smooth_mean_loro_10,
-                label=f"LORO 10 pretrain eps. Cum. reward={int(sum(mean_loro_10))}",
+                label=f"LLM-pretrain 10 pretrain eps. Cum. reward={int(sum(mean_loro_10))}",
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -825,7 +825,7 @@ def plot_pretrain_eps(hyperparams, cache):
             )
             axs[j, i].plot(
                 smooth_mean_loro_20,
-                label=f"LORO 20 pretrain eps. Cum. reward={int(sum(mean_loro_20))}",
+                label=f"LLM-pretrain 20 pretrain eps. Cum. reward={int(sum(mean_loro_20))}",
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -835,7 +835,7 @@ def plot_pretrain_eps(hyperparams, cache):
             )
             axs[j, i].plot(
                 smooth_mean_loro_30,
-                label=f"LORO 30 pretrain eps. Cum. reward={int(sum(mean_loro_30))}",
+                label=f"LLM-pretrain 30 pretrain eps. Cum. reward={int(sum(mean_loro_30))}",
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -901,7 +901,7 @@ def plot_pretrain_big(hyperparams, cache):
             std_rand = cache[f"std_rand_pretrain_{pretrain_step}_pre_{i+1}0"] / np.sqrt(
                 hyperparams["n_exp"]
             )
-            axs[j, i].plot(mean_loro, label=f"LORO. Cum. reward={int(sum(mean_loro))}")
+            axs[j, i].plot(mean_loro, label=f"LLM-pretrain. Cum. reward={int(sum(mean_loro))}")
             axs[j, i].fill_between(
                 cache["x"], mean_loro - std_loro, mean_loro + std_loro, alpha=0.3
             )
@@ -998,7 +998,7 @@ def plot_sft_lcot_big(hyperparams, cache):
                 smooth_mean_sft = rbf(cache["x"])
 
                 axs[j, i].plot(
-                    smooth_mean_loro, label=f"LORO. Cum. reward={int(sum(mean_loro))}"
+                    smooth_mean_loro, label=f"LLM-pretrain. Cum. reward={int(sum(mean_loro))}"
                 )
                 axs[j, i].fill_between(
                     cache["x"],
@@ -1452,7 +1452,7 @@ def create_legend_rectangle(x_name, y_name, figsize=(12, 1.5), fontsize=9, save_
     
     Args:
         x_name: Name for X dataset (e.g., "Qwen 7B")
-        y_name: Name for Y dataset (e.g., "LORO")
+        y_name: Name for Y dataset (e.g., "LLM-pretrain")
         figsize: Figure size as tuple (width, height)
         marker_sizes: Marker sizes in points. Can be a single number, a 2-tuple
             for (Start, End) repeated for both X and Y, or a 4-tuple/list for

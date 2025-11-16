@@ -292,7 +292,7 @@ def rollout(agent, env, hyperparams):
 
 if __name__ == "__main__":
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description="LORO Training Script")
+    parser = argparse.ArgumentParser(description="LLM-pretrain Training Script")
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-7B-Instruct",
                         help="Model name to use for training") #"deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
     parser.add_argument("--env", type=str, default="CliffWalking-v0",
