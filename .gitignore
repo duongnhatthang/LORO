@@ -17,3 +17,10 @@ d3rlpy_logs/*/time_step.csv
 data/*.zip
 data/old/
 full_results/
+figs_backup/
+data_backup/
+data_levi/
+data_orca
+logs_orca/
+logs_levi/
+logs_good/

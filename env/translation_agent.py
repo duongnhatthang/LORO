@@ -4,6 +4,27 @@ import gymnasium as gym
 import argparse
 from collections import Counter
 import numpy as np
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class GameConfig:
+    """Configuration class for game parameters, replacing argparse usage."""
+    is_only_local_obs: int = 1
+    max_episode_len: int = 108000 // 6
+    frameskip: int = 4
+    
+    @classmethod
+    def from_args(cls, args: Optional[argparse.Namespace] = None) -> 'GameConfig':
+        """Create GameConfig from argparse.Namespace if provided, otherwise use defaults."""
+        if args is None:
+            return cls()
+        return cls(
+            is_only_local_obs=getattr(args, 'is_only_local_obs', 1),
+            max_episode_len=getattr(args, 'max_episode_len', 108000 // 6),
+            frameskip=getattr(args, 'frameskip', 4)
+        )
 
 
 class TranslationAgent(Agent):
@@ -16,6 +37,7 @@ class TranslationAgent(Agent):
         ppo_config_dict=None,
         obs_translator=None,
         game_describer=None,
+        is_sft=False,
         reasoning_mode="COT",
         num_votes=5,
         num_cot_samples=5,
@@ -30,7 +52,7 @@ class TranslationAgent(Agent):
         elif game_describer:
             self.game_describer = game_describer
         super().__init__(
-            model, tokenizer, device, generate_config_dict, ppo_config_dict
+            model, tokenizer, device, generate_config_dict, ppo_config_dict, is_sft
         )
 
     def get_system_prompt(self) -> str:
@@ -179,33 +201,23 @@ class SpaceInvadersAgent(TranslationAgent):
         ppo_config_dict=None,
         obs_translator=None,
         game_describer=None,
+        is_sft=False,
+        game_config: Optional[GameConfig] = None,
     ):
         if obs_translator is None:
             obs_translator = atari.SpaceInvaders_translator.ObsTranslator()
         if game_describer is None:
-            parser = argparse.ArgumentParser(
-                description="Place holder args to init stuff."
-            )
-            parser.add_argument(
-                "--is_only_local_obs",
-                type=int,
-                default=1,
-                help="Whether only taking local observations, if is_only_local_obs = 1, only using local obs",
-            )
-            parser.add_argument(
-                "--max_episode_len",
-                type=int,
-                default=108000 // 6,
-                help="The maximum number of steps in an episode",
-            )
-            parser.add_argument(
-                "--frameskip",
-                type=int,
-                default=4,
-                help="The frameskip for atari environments",
-            )
-            args = parser.parse_args()
-            self.game_describer = atari.SpaceInvaders_translator.GameDescriber(args)
+            # Use provided config or create default one
+            config = game_config if game_config is not None else GameConfig()
+            # Create a mock args object for backward compatibility
+            class MockArgs:
+                def __init__(self, config: GameConfig):
+                    self.is_only_local_obs = config.is_only_local_obs
+                    self.max_episode_len = config.max_episode_len
+                    self.frameskip = config.frameskip
+            
+            mock_args = MockArgs(config)
+            self.game_describer = atari.SpaceInvaders_translator.GameDescriber(mock_args)
         super().__init__(
             model,
             tokenizer,
@@ -214,6 +226,7 @@ class SpaceInvadersAgent(TranslationAgent):
             ppo_config_dict,
             obs_translator,
             game_describer,
+            is_sft,
         )
 
     def extract_action(self, response: str) -> gym.core.ActType:
@@ -256,33 +269,23 @@ class PongAgent(TranslationAgent):
         ppo_config_dict=None,
         obs_translator=None,
         game_describer=None,
+        is_sft=False,
+        game_config: Optional[GameConfig] = None,
     ):
         if obs_translator is None:
             obs_translator = atari.Pong_translator.ObsTranslator()
         if game_describer is None:
-            parser = argparse.ArgumentParser(
-                description="Place holder args to init stuff."
-            )
-            parser.add_argument(
-                "--is_only_local_obs",
-                type=int,
-                default=1,
-                help="Whether only taking local observations, if is_only_local_obs = 1, only using local obs",
-            )
-            parser.add_argument(
-                "--max_episode_len",
-                type=int,
-                default=108000 // 6,
-                help="The maximum number of steps in an episode",
-            )
-            parser.add_argument(
-                "--frameskip",
-                type=int,
-                default=4,
-                help="The frameskip for atari environments",
-            )
-            args = parser.parse_args()
-            self.game_describer = atari.Pong_translator.GameDescriber(args)
+            # Use provided config or create default one
+            config = game_config if game_config is not None else GameConfig()
+            # Create a mock args object for backward compatibility
+            class MockArgs:
+                def __init__(self, config: GameConfig):
+                    self.is_only_local_obs = config.is_only_local_obs
+                    self.max_episode_len = config.max_episode_len
+                    self.frameskip = config.frameskip
+            
+            mock_args = MockArgs(config)
+            self.game_describer = atari.Pong_translator.GameDescriber(mock_args)
         super().__init__(
             model,
             tokenizer,
@@ -291,6 +294,7 @@ class PongAgent(TranslationAgent):
             ppo_config_dict,
             obs_translator,
             game_describer,
+            is_sft,
         )
 
     def extract_action(self, response: str) -> gym.core.ActType:
@@ -398,10 +402,29 @@ class MountainCarAgent(TranslationAgent):
 
 
 class FrozenLakeAgent(TranslationAgent):
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self,
+        model,
+        tokenizer,
+        device,
+        generate_config_dict=None,
+        ppo_config_dict=None,
+        obs_translator=None,
+        game_describer=None,
+        is_sft=False,
+    ):
         self.env_hist = None
         self.env_hist_prompt = None
-        super().__init__(*args, **kwargs)
+        super().__init__(
+            model,
+            tokenizer,
+            device,
+            generate_config_dict,
+            ppo_config_dict,
+            obs_translator,
+            game_describer,
+            is_sft,
+        )
 
     def get_system_prompt(self) -> str:
         original_sys_prompt = super().get_system_prompt()
