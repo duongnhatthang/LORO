@@ -59,7 +59,7 @@ def buffer_to_dataset(temp_buffer, buffer_size, n_pretrain_eps, env):
         )
     return offline_dataset, buffer
 
-def online_training_with_pretrain(hyperparams, explorer, seed, n_pretrain_steps, n_pretrain_eps, n_online_eps):
+def online_training_with_init_policy(hyperparams, explorer, seed, n_pretrain_steps, n_pretrain_eps, n_online_eps):
     dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
     tmp_env, _ = get_env_and_eval_env(hyperparams["env"], seed)
     # Initialize empty FIFO buffer
@@ -169,9 +169,9 @@ def online_training_with_pretrain(hyperparams, explorer, seed, n_pretrain_steps,
     return eps_rewards, final_eval_dataset, offline_dataset
 
 
-def online_training_rand(hyperparams, explorer, seed, n_pretrain_steps, n_pretrain_eps, n_online_eps):
+def online_training_rand_policy(hyperparams, explorer, seed, n_pretrain_steps, n_pretrain_eps, n_online_eps):
     """
-    Same as online_training_with_pretrain, but with random actions for the first n_pretrain_eps episodes.
+    Same as online_training_with_init_policy, but with random actions for the first n_pretrain_eps episodes.
     """
     dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
     random_policy = create_random_model(hyperparams["env"], hyperparams["gpu"])
@@ -270,10 +270,10 @@ def run_exp_and_save(
     hyperparams, explorer, is_rand=True
 ):
     if is_rand:
-        online_training_fn = online_training_rand
+        online_training_fn = online_training_rand_policy
         suffix = "_rand"
     else:
-        online_training_fn = online_training_with_pretrain
+        online_training_fn = online_training_with_init_policy
         suffix = ""
     n_episodes = hyperparams["n_online_eps"] + hyperparams["n_pretrain_eps"]
     cache = {}

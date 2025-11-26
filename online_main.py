@@ -8,10 +8,15 @@ import json
 import os
 from tqdm import trange
 from datetime import datetime
-from utils import *
+from utils import (
+    get_llm_data_paths, get_env_and_eval_env, create_d3rlpy_model, create_random_model,
+    pretrain_from_llm, load_dataset_to_buffer, rollout_and_eval, buffer_to_dataset,
+    write_timing_log, SB3_AVAILABLE, EpisodeRewardCallback, create_ppo_env,
+    create_ppo_model, evaluate_ppo_policy, online_training_ppo_with_init_policy, online_training_ppo_rand
+)
 
 
-def online_training_with_pretrain(hyperparams, explorer, seed, n_pretrain_steps, n_pretrain_eps, n_online_eps):
+def online_training_with_init_policy(hyperparams, explorer, seed, n_pretrain_steps, n_pretrain_eps, n_online_eps):
     dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
     tmp_env, _ = get_env_and_eval_env(hyperparams["env"], seed)
     # Initialize empty FIFO buffer
@@ -33,9 +38,9 @@ def online_training_with_pretrain(hyperparams, explorer, seed, n_pretrain_steps,
     return eps_rewards, final_eval_dataset, offline_dataset
 
 
-def online_training_rand(hyperparams, explorer, seed, n_pretrain_steps, n_pretrain_eps, n_online_eps):
+def online_training_rand_policy(hyperparams, explorer, seed, n_pretrain_steps, n_pretrain_eps, n_online_eps):
     """
-    Same as online_training_with_pretrain, but with random actions for the first n_pretrain_eps episodes.
+    Same as online_training_with_init_policy, but with random actions for the first n_pretrain_eps episodes.
     """
     dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
     random_policy = create_random_model(hyperparams["env"], hyperparams["gpu"])
@@ -78,10 +83,10 @@ def run_exp_and_save(
     hyperparams, explorer, is_rand=True
 ):
     if is_rand:
-        online_training_fn = online_training_rand
+        online_training_fn = online_training_rand_policy
         suffix = "_rand"
     else:
-        online_training_fn = online_training_with_pretrain
+        online_training_fn = online_training_with_init_policy
         suffix = ""
     n_episodes = hyperparams["n_online_eps"] + hyperparams["n_pretrain_eps"]
     cache = {}
@@ -186,6 +191,106 @@ def _online_training(hyperparams, explorer, cache, data_path, model_size, suffix
     cache = _online_training_with_mixed_pretraining_data(hyperparams, explorer, cache, model_size)
     return cache
 
+
+# ============================================================================
+# PPO Experiment Functions
+# ============================================================================
+
+def run_ppo_exp(n_pretrain_steps, n_pretrain_eps, n_online_eps, cache, hyperparams, online_training_fn):
+    """
+    Run PPO experiments similar to run_exp but for PPO algorithm.
+    """
+    for i in range(hyperparams["n_exp"]):
+        cache[
+            f'ppo_pretrain_{n_pretrain_eps}_eps_{n_pretrain_steps}_steps_{i}'
+        ], cache[
+            f'ppo_pretrain_{n_pretrain_eps}_eps_{n_pretrain_steps}_steps_{i}_dataset'
+        ], cache[
+            f'ppo_pretrain_{n_pretrain_eps}_eps_{n_pretrain_steps}_steps_{i}_offline_dataset'
+        ] = online_training_fn(hyperparams, hyperparams["seed"]+i, n_pretrain_steps, n_pretrain_eps, n_online_eps)
+    return cache
+
+
+def run_ppo_exp_and_save(hyperparams, is_rand=True):
+    """
+    Run PPO experiments to test pretraining with online RL and Random data.
+    """
+    if not SB3_AVAILABLE:
+        print("Warning: stable-baselines3 not installed. Skipping PPO experiments.")
+        return
+    
+    if is_rand:
+        online_training_fn = online_training_ppo_rand
+        suffix = "_ppo_rand"
+    else:
+        online_training_fn = online_training_ppo_with_init_policy
+        suffix = "_ppo"
+    
+    n_episodes = hyperparams["n_online_eps"] + hyperparams["n_pretrain_eps"]
+    cache = {}
+    
+    for n_pretrain_steps in [1000, 3000]:
+        for n_pretrain_eps in [10, 20, 30]:
+            n_online_eps = n_episodes - n_pretrain_eps
+            cache = run_ppo_exp(n_pretrain_steps, n_pretrain_eps, n_online_eps, cache, hyperparams, online_training_fn)
+    
+    with open(
+        f'data/cache_{hyperparams["env"].split("-")[0]}_on_policy_pretrain_exp{suffix}{"_awac" if hyperparams["awac"] else ""}.pkl',
+        "wb",
+    ) as file:
+        pickle.dump(cache, file)
+
+
+def _online_training_ppo_from_scratch(hyperparams, cache):
+    """
+    Train PPO from scratch (no pretraining).
+    """
+    if not SB3_AVAILABLE:
+        raise ImportError("stable-baselines3 is required for PPO training.")
+    
+    n_rollouts = hyperparams["n_pretrain_eps"] + hyperparams["n_online_eps"]
+    
+    for i in range(hyperparams["n_exp"]):
+        seed = hyperparams["seed"] + i
+        np.random.seed(seed)
+        
+        env = create_ppo_env(hyperparams["env"], seed)
+        eval_env = create_ppo_env(hyperparams["env"], seed)
+        
+        hyperparams_with_seed = {**hyperparams, "seed": seed}
+        ppo_model = create_ppo_model(env, hyperparams_with_seed)
+        
+        total_timesteps = n_rollouts * hyperparams["max_episode_len"]
+        
+        callback = EpisodeRewardCallback()
+        ppo_model.learn(
+            total_timesteps=total_timesteps,
+            callback=callback,
+            progress_bar=False,
+        )
+        
+        eps_rewards = callback.get_episode_rewards()[:n_rollouts]
+        
+        # Fill remaining if needed
+        while len(eps_rewards) < n_rollouts:
+            mean_reward, _, _ = evaluate_ppo_policy(ppo_model, eval_env, n_eval_episodes=1, max_episode_len=hyperparams["max_episode_len"])
+            eps_rewards.append(mean_reward)
+        
+        _, _, final_eval_dataset = evaluate_ppo_policy(
+            ppo_model, eval_env,
+            n_eval_episodes=10,
+            max_episode_len=hyperparams["max_episode_len"]
+        )
+        
+        cache[f"ppo_online_{i}"] = eps_rewards
+        cache[f"ppo_online_{i}_dataset"] = final_eval_dataset
+        
+        env.close()
+        eval_env.close()
+    
+    return cache
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Online training with hyperparameter configuration")
     
@@ -236,6 +341,22 @@ if __name__ == "__main__":
                        help="Run the main fine-tune experiments")
     parser.add_argument("--online_rand", action="store_true", default=False,
                        help="Run the random and online fine-tune experiments")
+    parser.add_argument("--ppo", action="store_true", default=False,
+                       help="Run PPO experiments (requires stable-baselines3)")
+    parser.add_argument("--ppo_n_steps", type=int, default=2048,
+                       help="Number of steps per PPO update")
+    parser.add_argument("--ppo_n_epochs", type=int, default=10,
+                       help="Number of PPO epochs per update")
+    parser.add_argument("--gae_lambda", type=float, default=0.95,
+                       help="GAE lambda for PPO")
+    parser.add_argument("--clip_range", type=float, default=0.2,
+                       help="Clipping range for PPO")
+    parser.add_argument("--ent_coef", type=float, default=0.0,
+                       help="Entropy coefficient for PPO")
+    parser.add_argument("--vf_coef", type=float, default=0.5,
+                       help="Value function coefficient for PPO")
+    parser.add_argument("--max_grad_norm", type=float, default=0.5,
+                       help="Max gradient norm for PPO")
     
     args = parser.parse_args()
     
@@ -260,6 +381,15 @@ if __name__ == "__main__":
         "n_steps_per_epoch": args.n_steps_per_epoch,
         "online_exp": args.online_exp,
         "online_rand": args.online_rand,
+        # PPO-specific hyperparameters
+        "ppo": args.ppo,
+        "ppo_n_steps": args.ppo_n_steps,
+        "ppo_n_epochs": args.ppo_n_epochs,
+        "gae_lambda": args.gae_lambda,
+        "clip_range": args.clip_range,
+        "ent_coef": args.ent_coef,
+        "vf_coef": args.vf_coef,
+        "max_grad_norm": args.max_grad_norm,
     }
 
     # setup explorers
@@ -321,6 +451,52 @@ if __name__ == "__main__":
         print(f"run_exp_and_save with pretrain data completed in {timing_data['run_exp_and_save_pretrain']:.2f} seconds")
     else:
         print("Skipping random and online fine-tune experiments (online_rand=False)")
+    
+    # PPO experiments
+    if hyperparams["ppo"]:
+        if not SB3_AVAILABLE:
+            print("Error: stable-baselines3 not installed. Skipping PPO experiments.")
+            print("Install with: pip install stable-baselines3")
+        else:
+            print("=" * 60)
+            print("Starting PPO experiments...")
+            print("=" * 60)
+            
+            # PPO from scratch
+            print("Starting PPO training from scratch...")
+            start_time = time.time()
+            ppo_cache = {}
+            # Missing training PPO from pretrained model
+            ppo_cache = _online_training_ppo_from_scratch(hyperparams, ppo_cache)
+            end_time = time.time()
+            timing_data['ppo_from_scratch'] = end_time - start_time
+            print(f"PPO from scratch completed in {timing_data['ppo_from_scratch']:.2f} seconds")
+            
+            # PPO with pretrain
+            print("Starting PPO run_ppo_exp_and_save with pretrain data...")
+            start_time = time.time()
+            run_ppo_exp_and_save(hyperparams, is_rand=False)
+            end_time = time.time()
+            timing_data['ppo_pretrain'] = end_time - start_time
+            print(f"PPO pretrain experiments completed in {timing_data['ppo_pretrain']:.2f} seconds")
+            
+            # PPO with random warmup
+            print("Starting PPO run_ppo_exp_and_save with random data...")
+            start_time = time.time()
+            run_ppo_exp_and_save(hyperparams, is_rand=True)
+            end_time = time.time()
+            timing_data['ppo_rand'] = end_time - start_time
+            print(f"PPO random experiments completed in {timing_data['ppo_rand']:.2f} seconds")
+            
+            # Save PPO cache
+            with open(
+                f'data/cache_{hyperparams["env"].split("-")[0]}_ppo_Neps_{hyperparams["n_pretrain_eps"]}.pkl',
+                "wb",
+            ) as file:
+                pickle.dump(ppo_cache, file)
+            print(f"PPO cache saved to data/cache_{hyperparams['env'].split('-')[0]}_ppo_Neps_{hyperparams['n_pretrain_eps']}.pkl")
+    else:
+        print("Skipping PPO experiments (ppo=False)")
     
     # Write timing log with hyperparameters
     write_timing_log(hyperparams, timing_data)

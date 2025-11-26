@@ -1,4 +1,5 @@
 d3rlpy
+stable-baselines3
 cython==0.29.32
 torch == 2.2.1
 transformers == 4.38.2

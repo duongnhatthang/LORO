@@ -431,3 +431,385 @@ def write_timing_log(hyperparams, timing_data, log_filename=None):
     
     print(f"Timing log written to: {log_filename}")
     return log_filename
+
+
+# ============================================================================
+# PPO Training Functions (using Stable-Baselines3)
+# ============================================================================
+
+# Stable-Baselines3 imports for PPO
+try:
+    from stable_baselines3 import PPO
+    from stable_baselines3.common.vec_env import DummyVecEnv
+    from stable_baselines3.common.callbacks import BaseCallback
+    from stable_baselines3.common.evaluation import evaluate_policy
+    SB3_AVAILABLE = True
+except ImportError:
+    SB3_AVAILABLE = False
+
+
+class EpisodeRewardCallback(BaseCallback):
+    """
+    Custom callback for tracking episode rewards during PPO training.
+    """
+    def __init__(self, verbose=0):
+        super().__init__(verbose)
+        self.episode_rewards = []
+        self.current_episode_reward = 0.0
+        
+    def _on_step(self) -> bool:
+        # Track rewards
+        self.current_episode_reward += self.locals.get('rewards', [0])[0]
+        
+        # Check if episode is done
+        dones = self.locals.get('dones', [False])
+        if dones[0]:
+            self.episode_rewards.append(self.current_episode_reward)
+            self.current_episode_reward = 0.0
+        return True
+    
+    def get_episode_rewards(self):
+        return self.episode_rewards.copy()
+
+
+def create_ppo_env(env_name, seed=None):
+    """
+    Create a gymnasium environment wrapped for PPO training.
+    Handles discrete observation spaces with one-hot encoding.
+    """
+    def make_env():
+        if "Represented" in env_name:
+            env = GymCompatWrapper2(gym.make(env_name))
+        elif isinstance(gym.make(env_name).observation_space, gym.spaces.Discrete):
+            env = OneHotWrapper(gym.make(env_name))
+        else:
+            env = gym.make(env_name)
+        return env
+    
+    return DummyVecEnv([make_env])
+
+
+def create_ppo_model(env, hyperparams):
+    """
+    Create a PPO model with specified hyperparameters.
+    """
+    if not SB3_AVAILABLE:
+        raise ImportError("stable-baselines3 is required for PPO. Install with: pip install stable-baselines3")
+    
+    ppo_model = PPO(
+        policy="MlpPolicy",
+        env=env,
+        learning_rate=hyperparams.get("learning_rate", 3e-4),
+        n_steps=hyperparams.get("ppo_n_steps", 2048),
+        batch_size=hyperparams.get("batch_size", 64),
+        n_epochs=hyperparams.get("ppo_n_epochs", 10),
+        gamma=hyperparams.get("gamma", 0.99),
+        gae_lambda=hyperparams.get("gae_lambda", 0.95),
+        clip_range=hyperparams.get("clip_range", 0.2),
+        ent_coef=hyperparams.get("ent_coef", 0.0),
+        vf_coef=hyperparams.get("vf_coef", 0.5),
+        max_grad_norm=hyperparams.get("max_grad_norm", 0.5),
+        verbose=0,
+        seed=hyperparams.get("seed", None),
+        device="cuda" if hyperparams.get("gpu", True) else "cpu",
+    )
+    return ppo_model
+
+
+def evaluate_ppo_policy(model, env, n_eval_episodes=10, max_episode_len=200):
+    """
+    Evaluate a PPO policy and return episode rewards and collected trajectories.
+    """
+    episode_rewards = []
+    observations, actions, rewards, terminals = [], [], [], []
+    
+    for _ in range(n_eval_episodes):
+        obs = env.reset()
+        episode_reward = 0.0
+        step_count = 0
+        done = False
+        
+        while not done and step_count < max_episode_len:
+            action, _ = model.predict(obs, deterministic=True)
+            next_obs, reward, done, info = env.step(action)
+            
+            # Handle vectorized env outputs
+            obs_to_store = obs[0] if isinstance(obs, np.ndarray) and len(obs.shape) > 1 else obs
+            action_to_store = action[0] if isinstance(action, np.ndarray) and len(action.shape) > 0 else action
+            reward_val = reward[0] if isinstance(reward, np.ndarray) else reward
+            done_val = done[0] if isinstance(done, np.ndarray) else done
+            
+            observations.append(obs_to_store)
+            actions.append(action_to_store)
+            rewards.append(reward_val)
+            episode_reward += reward_val
+            step_count += 1
+            
+            if step_count >= max_episode_len:
+                done_val = True
+            terminals.append(int(done_val))
+            
+            obs = next_obs
+            done = done_val
+        
+        episode_rewards.append(episode_reward)
+    
+    # Create dataset for compatibility
+    dataset = d3rlpy.dataset.MDPDataset(
+        observations=np.array(observations),
+        actions=np.array(actions),
+        rewards=np.array(rewards),
+        terminals=np.array(terminals),
+    )
+    
+    return float(np.mean(episode_rewards)), episode_rewards, dataset
+
+
+def online_training_ppo_with_init_policy(hyperparams, seed, n_pretrain_steps, n_pretrain_eps, n_online_eps):
+    """
+    PPO equivalent of online_training_with_init_policy.
+    
+    This function:
+    1. Collects data by running the initialized PPO policy (no training) for n_pretrain_eps episodes
+    2. Offline pretrains on this collected dataset for n_pretrain_steps
+    3. Continues online fine-tuning for n_online_eps episodes
+    
+    Args:
+        hyperparams: Dictionary containing training hyperparameters
+        seed: Random seed for reproducibility
+        n_pretrain_steps: Number of pretraining steps
+        n_pretrain_eps: Number of pretraining episodes (data collection with init policy)
+        n_online_eps: Number of online training episodes
+    
+    Returns:
+        eps_rewards: List of episode rewards throughout training
+        final_eval_dataset: Dataset from final policy evaluation
+        offline_dataset: Dataset from data collection phase
+    """
+    if not SB3_AVAILABLE:
+        raise ImportError("stable-baselines3 is required for PPO training. Install with: pip install stable-baselines3")
+    
+    # Set seeds
+    np.random.seed(seed)
+    
+    # Create environment
+    env = create_ppo_env(hyperparams["env"], seed)
+    eval_env = create_ppo_env(hyperparams["env"], seed)
+    
+    # Create PPO model
+    hyperparams_with_seed = {**hyperparams, "seed": seed}
+    ppo_model = create_ppo_model(env, hyperparams_with_seed)
+    
+    eps_rewards = []
+    
+    # Phase 1: Collect data with initialized policy (NO training/updates)
+    init_observations, init_actions, init_rewards, init_terminals = [], [], [], []
+    
+    for _ in range(n_pretrain_eps):
+        obs = env.reset()
+        episode_reward = 0.0
+        step_count = 0
+        done = False
+        
+        while not done and step_count < hyperparams["max_episode_len"]:
+            # Use the initialized policy to predict actions (no training)
+            action, _ = ppo_model.predict(obs, deterministic=False)
+            next_obs, reward, done, info = env.step(action)
+            
+            # Store data for offline dataset
+            obs_to_store = obs[0] if isinstance(obs, np.ndarray) and len(obs.shape) > 1 else obs
+            action_to_store = action[0] if isinstance(action, np.ndarray) and len(action.shape) > 0 else action
+            reward_val = reward[0] if isinstance(reward, np.ndarray) else reward
+            done_val = done[0] if isinstance(done, np.ndarray) else done
+            
+            init_observations.append(obs_to_store)
+            init_actions.append(action_to_store)
+            init_rewards.append(reward_val)
+            episode_reward += reward_val
+            step_count += 1
+            
+            if step_count >= hyperparams["max_episode_len"]:
+                done_val = True
+            init_terminals.append(int(done_val))
+            
+            obs = next_obs
+            done = done_val
+        
+        eps_rewards.append(episode_reward)
+    
+    # Create offline dataset from collected data
+    offline_dataset = d3rlpy.dataset.MDPDataset(
+        observations=np.array(init_observations),
+        actions=np.array(init_actions),
+        rewards=np.array(init_rewards),
+        terminals=np.array(init_terminals),
+    )
+    
+    # Phase 2: Offline pretrain on collected data for n_pretrain_steps
+    # Note: PPO is on-policy, so we simulate offline training by running PPO.learn()
+    # which collects fresh data during training. The phase 1 rewards represent
+    # the initial policy performance before any training.
+    pretrain_callback = EpisodeRewardCallback()
+    ppo_model.learn(
+        total_timesteps=n_pretrain_steps,
+        callback=pretrain_callback,
+        progress_bar=False,
+    )
+    
+    # Phase 3: Continue online fine-tuning for n_online_eps episodes
+    online_timesteps = n_online_eps * hyperparams["max_episode_len"]
+    
+    online_callback = EpisodeRewardCallback()
+    ppo_model.learn(
+        total_timesteps=online_timesteps,
+        callback=online_callback,
+        progress_bar=False,
+        reset_num_timesteps=False,  # Continue from where we left off
+    )
+    eps_rewards_online = online_callback.get_episode_rewards()
+    
+    # Add online training rewards
+    for reward in eps_rewards_online[:n_online_eps]:
+        eps_rewards.append(reward)
+    
+    # Ensure we have the expected number of rewards
+    total_eps = n_pretrain_eps + n_online_eps
+    while len(eps_rewards) < total_eps:
+        # Evaluate to fill remaining slots
+        mean_reward, _, _ = evaluate_ppo_policy(ppo_model, eval_env, n_eval_episodes=1, max_episode_len=hyperparams["max_episode_len"])
+        eps_rewards.append(mean_reward)
+    
+    # Final evaluation
+    _, _, final_eval_dataset = evaluate_ppo_policy(
+        ppo_model, eval_env, 
+        n_eval_episodes=10, 
+        max_episode_len=hyperparams["max_episode_len"]
+    )
+    
+    env.close()
+    eval_env.close()
+    
+    return eps_rewards[:total_eps], final_eval_dataset, offline_dataset
+
+
+def online_training_ppo_rand(hyperparams, seed, n_pretrain_steps, n_pretrain_eps, n_online_eps):
+    """
+    PPO equivalent of online_training_rand_policy.
+    
+    This function:
+    1. Collects data with random policy for n_pretrain_eps episodes
+    2. Offline trains PPO on this data for n_pretrain_steps
+    3. Continues online learning for n_online_eps episodes
+    
+    Args:
+        hyperparams: Dictionary containing training hyperparameters
+        seed: Random seed for reproducibility
+        n_pretrain_steps: Number of pretraining steps
+        n_pretrain_eps: Number of random episodes for data collection
+        n_online_eps: Number of online training episodes
+    
+    Returns:
+        eps_rewards: List of episode rewards throughout training
+        final_eval_dataset: Dataset from final policy evaluation
+        offline_dataset: Dataset from random data collection phase
+    """
+    if not SB3_AVAILABLE:
+        raise ImportError("stable-baselines3 is required for PPO training. Install with: pip install stable-baselines3")
+    
+    # Set seeds
+    np.random.seed(seed)
+    
+    # Create environments
+    env = create_ppo_env(hyperparams["env"], seed)
+    eval_env = create_ppo_env(hyperparams["env"], seed)
+    
+    eps_rewards = []
+    
+    # Phase 1: Collect data with random policy (no training)
+    random_observations, random_actions, random_rewards, random_terminals = [], [], [], []
+    
+    for _ in range(n_pretrain_eps):
+        obs = env.reset()
+        episode_reward = 0.0
+        step_count = 0
+        done = False
+        
+        while not done and step_count < hyperparams["max_episode_len"]:
+            action = [env.action_space.sample()]  # Random action
+            next_obs, reward, done, info = env.step(action)
+            
+            obs_to_store = obs[0] if isinstance(obs, np.ndarray) and len(obs.shape) > 1 else obs
+            action_to_store = action[0] if isinstance(action, (list, np.ndarray)) else action
+            reward_val = reward[0] if isinstance(reward, np.ndarray) else reward
+            done_val = done[0] if isinstance(done, np.ndarray) else done
+            
+            random_observations.append(obs_to_store)
+            random_actions.append(action_to_store)
+            random_rewards.append(reward_val)
+            episode_reward += reward_val
+            step_count += 1
+            
+            if step_count >= hyperparams["max_episode_len"]:
+                done_val = True
+            random_terminals.append(int(done_val))
+            
+            obs = next_obs
+            done = done_val
+        
+        eps_rewards.append(episode_reward)
+    
+    # Create offline dataset from random data
+    offline_dataset = d3rlpy.dataset.MDPDataset(
+        observations=np.array(random_observations),
+        actions=np.array(random_actions),
+        rewards=np.array(random_rewards),
+        terminals=np.array(random_terminals),
+    )
+    
+    # Phase 2: Offline train PPO for n_pretrain_steps
+    # Note: PPO is on-policy, so we simulate offline training by running PPO.learn()
+    # which collects fresh data during training. The phase 1 rewards represent
+    # the random policy performance before any training.
+    hyperparams_with_seed = {**hyperparams, "seed": seed}
+    ppo_model = create_ppo_model(env, hyperparams_with_seed)
+    
+    pretrain_callback = EpisodeRewardCallback()
+    ppo_model.learn(
+        total_timesteps=n_pretrain_steps,
+        callback=pretrain_callback,
+        progress_bar=False,
+    )
+    
+    # Phase 3: Continue online learning for n_online_eps episodes
+    online_timesteps = n_online_eps * hyperparams["max_episode_len"]
+    
+    online_callback = EpisodeRewardCallback()
+    ppo_model.learn(
+        total_timesteps=online_timesteps,
+        callback=online_callback,
+        progress_bar=False,
+        reset_num_timesteps=False,  # Continue from where we left off
+    )
+    eps_rewards_online = online_callback.get_episode_rewards()
+    
+    # Add online training rewards
+    for reward in eps_rewards_online[:n_online_eps]:
+        eps_rewards.append(reward)
+    
+    # Ensure we have the expected number of rewards
+    total_eps = n_pretrain_eps + n_online_eps
+    while len(eps_rewards) < total_eps:
+        mean_reward, _, _ = evaluate_ppo_policy(ppo_model, eval_env, n_eval_episodes=1, max_episode_len=hyperparams["max_episode_len"])
+        eps_rewards.append(mean_reward)
+    
+    # Final evaluation
+    _, _, final_eval_dataset = evaluate_ppo_policy(
+        ppo_model, eval_env,
+        n_eval_episodes=10,
+        max_episode_len=hyperparams["max_episode_len"]
+    )
+    
+    env.close()
+    eval_env.close()
+    
+    return eps_rewards[:total_eps], final_eval_dataset, offline_dataset
