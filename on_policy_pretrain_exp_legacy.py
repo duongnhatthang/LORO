@@ -266,7 +266,7 @@ def run_exp(
         ] = online_training_fn(hyperparams, explorer, hyperparams["seed"]+i, n_pretrain_steps, n_pretrain_eps, n_online_eps)
     return cache
 
-def run_exp_and_save(
+def non_LLM_data_collect_pretrain_finetune_exp(
     hyperparams, explorer, is_rand=True
 ):
     if is_rand:
@@ -314,5 +314,5 @@ if __name__ == "__main__":
 
     # setup explorers
     explorer = d3rlpy.algos.ConstantEpsilonGreedy(hyperparams["eps"])
-    run_exp_and_save(hyperparams, explorer, is_rand=True)
-    run_exp_and_save(hyperparams, explorer, is_rand=False)
+    non_LLM_data_collect_pretrain_finetune_exp(hyperparams, explorer, is_rand=True)
+    non_LLM_data_collect_pretrain_finetune_exp(hyperparams, explorer, is_rand=False)

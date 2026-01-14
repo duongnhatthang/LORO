@@ -30,7 +30,7 @@ GAMMA=""
 TARGET_UPDATE_INTERVAL=""
 N_PRETRAIN_STEPS=""
 LONG_COT=""
-AWAC=""
+MODEL=""
 N_STEPS_PER_EPOCH=""
 ONLINE_EXP="false"
 ONLINE_RAND=""
@@ -69,7 +69,7 @@ show_usage() {
     echo "  --target_update_interval INTERVAL   Target network update interval (default: 1000)"
     echo "  --n_pretrain_steps STEPS            Number of pretraining steps (default: 1000)"
     echo "  --long_cot                          Use DeepSeek long CoT data paths (default: false)"
-    echo "  --awac                              Use AWAC model (default: false)"
+    echo "  --model MODEL                       Model type: 'default', 'awac', or 'ddpg' (default: default)"
     echo "  --n_steps_per_epoch STEPS           Number of steps per epoch for training (default: 200)"
     echo "  --online_exp                        Run the main fine-tune experiments (default: false)"
     echo "  --online_rand                       Run the random and online fine-tune experiments (default: true)"
@@ -132,7 +132,7 @@ build_args() {
     [ -n "$TARGET_UPDATE_INTERVAL" ] && args="$args --target_update_interval $TARGET_UPDATE_INTERVAL"
     [ -n "$N_PRETRAIN_STEPS" ] && args="$args --n_pretrain_steps $N_PRETRAIN_STEPS"
     [ -n "$LONG_COT" ] && args="$args $LONG_COT"
-    [ -n "$AWAC" ] && args="$args $AWAC"
+    [ -n "$MODEL" ] && args="$args --model $MODEL"
     [ -n "$N_STEPS_PER_EPOCH" ] && args="$args --n_steps_per_epoch $N_STEPS_PER_EPOCH"
     [ "$ONLINE_EXP" = "true" ] && args="$args --online_exp"
     [ "$ONLINE_RAND" = "true" ] && args="$args --online_rand"
@@ -337,9 +337,9 @@ while [[ $# -gt 0 ]]; do
             LONG_COT="--long_cot"
             shift
             ;;
-        --awac)
-            AWAC="--awac"
-            shift
+        --model)
+            MODEL="$2"
+            shift 2
             ;;
         --n_steps_per_epoch)
             N_STEPS_PER_EPOCH="$2"

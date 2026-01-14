@@ -22,7 +22,7 @@ TARGET_UPDATE_INTERVAL=""
 SFT=""
 LONG_COT=""
 N_PRETRAIN_STEPS=""
-AWAC=""
+MODEL=""
 N_STEPS_PER_EPOCH=""
 RUN_ALL_EXPERIMENTS=false
 
@@ -50,7 +50,7 @@ show_usage() {
     echo "  --sft                               Use SFT data paths"
     echo "  --long_cot                          Use DeepSeek long CoT data paths"
     echo "  --n_pretrain_steps STEPS            Number of pretraining steps (default: 1000)"
-    echo "  --awac                              Using AWAC model"
+    echo "  --model MODEL                       Model type: 'default', 'awac', or 'ddpg' (default: default)"
     echo "  --n_steps_per_epoch STEPS           Number of steps per epoch for training (default: 200)"
     echo ""
     echo "  --run_all_experiments               Run predefined experiments (DEFAULT)"
@@ -101,7 +101,7 @@ build_args() {
     [ -n "$SFT" ] && args="$args $SFT"
     [ -n "$LONG_COT" ] && args="$args $LONG_COT"
     [ -n "$N_PRETRAIN_STEPS" ] && args="$args --n_pretrain_steps $N_PRETRAIN_STEPS"
-    [ -n "$AWAC" ] && args="$args $AWAC"
+    [ -n "$MODEL" ] && args="$args --model $MODEL"
     [ -n "$N_STEPS_PER_EPOCH" ] && args="$args --n_steps_per_epoch $N_STEPS_PER_EPOCH"
     
     echo "$args"
@@ -261,9 +261,9 @@ while [[ $# -gt 0 ]]; do
             N_PRETRAIN_STEPS="$2"
             shift 2
             ;;
-        --awac)
-            AWAC="--awac"
-            shift
+        --model)
+            MODEL="$2"
+            shift 2
             ;;
         --n_steps_per_epoch)
             N_STEPS_PER_EPOCH="$2"
