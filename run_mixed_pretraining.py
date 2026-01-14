@@ -131,8 +131,8 @@ def main():
                        help="Use DeepSeek long CoT data paths")
     parser.add_argument("--n_pretrain_steps", type=int, default=1000,
                        help="Number of pretraining steps")
-    parser.add_argument("--awac", action="store_true", default=False,
-                       help="Using AWAC model")
+    parser.add_argument("--model", type=str, default="default", choices=["default", "awac", "ddpg"],
+                       help="Model type to use: 'default' (SAC/DoubleDQN), 'awac', or 'ddpg'")
     parser.add_argument("--n_steps_per_epoch", type=int, default=200,
                        help="Number of steps per epoch for training")
     
@@ -156,7 +156,7 @@ def main():
         "sft": args.sft,
         "long_cot": args.long_cot,
         "n_pretrain_steps": args.n_pretrain_steps,
-        "awac": args.awac,
+        "model": args.model,
         "n_steps_per_epoch": args.n_steps_per_epoch,
     }
     

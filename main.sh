@@ -30,7 +30,7 @@ GAMMA=0.99
 TARGET_UPDATE_INTERVAL=1000
 N_PRETRAIN_STEPS=1000
 LONG_COT=false
-AWAC=false
+MODEL="default"
 N_STEPS_PER_EPOCH=200
 ONLINE_EXP=true
 ONLINE_RAND=true
@@ -64,7 +64,7 @@ usage() {
     echo "  --target_update_interval N   Target network update interval (default: $TARGET_UPDATE_INTERVAL)"
     echo "  --n_pretrain_steps N         Number of pretraining steps (default: $N_PRETRAIN_STEPS)"
     echo "  --long_cot                   Use DeepSeek long CoT data paths (default: false)"
-    echo "  --awac                       Use AWAC model instead of SAC or DoubleDQN (default: false)"
+    echo "  --model MODEL                Model type: 'default', 'awac', or 'ddpg' (default: default)"
     echo "  --n_steps_per_epoch N        Number of steps per epoch for training (default: $N_STEPS_PER_EPOCH)"
     echo "  --online_exp                 Run the main fine-tune experiments (default: true)"
     echo "  --online_rand                Run the random and online fine-tune experiments (default: true)"
@@ -176,9 +176,9 @@ while [[ $# -gt 0 ]]; do
             LONG_COT=true
             shift
             ;;
-        --awac)
-            AWAC=true
-            shift
+        --model)
+            MODEL="$2"
+            shift 2
             ;;
         --n_steps_per_epoch)
             N_STEPS_PER_EPOCH="$2"
@@ -224,7 +224,7 @@ echo "Pretrain Episodes 3: $N_PRETRAIN_EPS_3"
 echo "Seed: $SEED"
 echo "SFT: $SFT"
 echo "GPU: $GPU"
-echo "AWAC: $AWAC"
+echo "Model: $MODEL"
 echo "Online Exp: $ONLINE_EXP"
 echo "Online Rand: $ONLINE_RAND"
 echo "=========================================="
@@ -247,8 +247,8 @@ fi
 if [ "$LONG_COT" = true ]; then
     ONLINE_BASE_ARGS="$ONLINE_BASE_ARGS --long_cot"
 fi
-if [ "$AWAC" = true ]; then
-    ONLINE_BASE_ARGS="$ONLINE_BASE_ARGS --awac"
+if [ "$MODEL" != "default" ]; then
+    ONLINE_BASE_ARGS="$ONLINE_BASE_ARGS --model $MODEL"
 fi
 if [ "$ONLINE_EXP" = true ]; then
     ONLINE_BASE_ARGS="$ONLINE_BASE_ARGS --online_exp"
@@ -257,45 +257,45 @@ if [ "$ONLINE_RAND" = true ]; then
     ONLINE_BASE_ARGS="$ONLINE_BASE_ARGS --online_rand"
 fi
 
-# Step 1: Run LLM training with Model 1 (skip if MODEL_NAME_1 is "none")
+# Step 1: Run LLM data collection with Model 1 (skip if MODEL_NAME_1 is "none")
 if [ "$MODEL_NAME_1" != "none" ]; then
-    echo "Step 1: Running LLM training with Model 1..."
+    echo "Step 1: Running LLM data collection with Model 1..."
     echo "Command: python llm_main.py --model_name $MODEL_NAME_1 $LLM_BASE_ARGS"
     echo ""
 
     python llm_main.py --model_name "$MODEL_NAME_1" $LLM_BASE_ARGS
 
     if [ $? -ne 0 ]; then
-        echo "Error: LLM training with Model 1 failed!"
+        echo "Error: LLM data collection with Model 1 failed!"
         exit 1
     fi
 
     echo ""
-    echo "LLM training with Model 1 completed successfully!"
+    echo "LLM data collection with Model 1 completed successfully!"
     echo ""
 else
-    echo "Step 1: Skipping LLM training with Model 1 (MODEL_NAME_1 is set to 'none')"
+    echo "Step 1: Skipping LLM data collection with Model 1 (MODEL_NAME_1 is set to 'none')"
     echo ""
 fi
 
-# Step 2: Run LLM training with Model 2 (skip if MODEL_NAME_2 is "none")
+# Step 2: Run LLM data collection with Model 2 (skip if MODEL_NAME_2 is "none")
 if [ "$MODEL_NAME_2" != "none" ]; then
-    echo "Step 2: Running LLM training with Model 2..."
+    echo "Step 2: Running LLM data collection with Model 2..."
     echo "Command: python llm_main.py --model_name $MODEL_NAME_2 $LLM_BASE_ARGS"
     echo ""
 
     python llm_main.py --model_name "$MODEL_NAME_2" $LLM_BASE_ARGS
 
     if [ $? -ne 0 ]; then
-        echo "Error: LLM training with Model 2 failed!"
+        echo "Error: LLM data collection with Model 2 failed!"
         exit 1
     fi
 
     echo ""
-    echo "LLM training with Model 2 completed successfully!"
+    echo "LLM data collection with Model 2 completed successfully!"
     echo ""
 else
-    echo "Step 2: Skipping LLM training with Model 2 (MODEL_NAME_2 is set to 'none')"
+    echo "Step 2: Skipping LLM data collection with Model 2 (MODEL_NAME_2 is set to 'none')"
     echo ""
 fi
 

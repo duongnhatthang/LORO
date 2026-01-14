@@ -12,7 +12,7 @@ from utils import *
 
 
 def online_training_with_pretrain(hyperparams, explorer, seed, n_pretrain_steps, n_pretrain_eps, n_online_eps):
-    dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
+    dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["model"])
     tmp_env, _ = get_env_and_eval_env(hyperparams["env"], seed)
     # Initialize empty FIFO buffer
     temp_buffer = d3rlpy.dataset.ReplayBuffer(
@@ -37,7 +37,7 @@ def online_training_rand(hyperparams, explorer, seed, n_pretrain_steps, n_pretra
     """
     Same as online_training_with_pretrain, but with random actions for the first n_pretrain_eps episodes.
     """
-    dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
+    dqn = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["model"])
     random_policy = create_random_model(hyperparams["env"], hyperparams["gpu"])
 
     tmp_env, _ = get_env_and_eval_env(hyperparams["env"], seed)
@@ -74,7 +74,7 @@ def run_exp(
         ] = online_training_fn(hyperparams, explorer, hyperparams["seed"]+i, n_pretrain_steps, n_pretrain_eps, n_online_eps)
     return cache
 
-def run_exp_and_save(
+def non_LLM_data_collect_pretrain_finetune_exp(
     hyperparams, explorer, is_rand=True
 ):
     if is_rand:
@@ -90,8 +90,9 @@ def run_exp_and_save(
             n_online_eps = n_episodes - n_pretrain_eps
             cache = run_exp(n_pretrain_steps, n_pretrain_eps, n_online_eps, cache, hyperparams, explorer, online_training_fn)
 
+    model_suffix = f"_{hyperparams['model']}" if hyperparams["model"] != "default" else ""
     with open(
-        f'data/cache_{hyperparams["env"].split("-")[0]}_on_policy_pretrain_exp{suffix}{"_awac" if hyperparams["awac"] else ""}.pkl',
+        f'data/cache_{hyperparams["env"].split("-")[0]}_on_policy_pretrain_exp{suffix}{model_suffix}.pkl',
         "wb",
     ) as file:
         pickle.dump(cache, file)
@@ -140,7 +141,7 @@ def _online_training_from_scratch(hyperparams, explorer, cache):
     # assert hyperparams["data_path"] is None, "data_path should be None when training from scratch"
     # assert hyperparams["n_pretrain_eps"] > 0, "n_pretrain_eps should be larger than 0 when training from scratch"
     tmp_env, _ = get_env_and_eval_env(hyperparams["env"], hyperparams["seed"]) # just use tmp_env to initialize the buffer
-    model = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
+    model = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["model"])
     # Initialize empty FIFO buffer
     buffer = d3rlpy.dataset.ReplayBuffer(
         buffer=d3rlpy.dataset.FIFOBuffer(limit=hyperparams["buffer_size"]),
@@ -157,7 +158,7 @@ def _online_training_with_mixed_pretraining_data(hyperparams, explorer, cache, m
     # assert hyperparams["data_path"] is not None, "data_path should not be None when training with mixed pretraining data"
     # assert hyperparams["n_pretrain_eps"] > 0, "n_pretrain_eps should be larger than 0 when training with mixed pretraining data"
     tmp_env, _ = get_env_and_eval_env(hyperparams["env"], hyperparams["seed"]) # just use tmp_env to initialize the buffer
-    model = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
+    model = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["model"])
 
     # Initialize empty FIFO buffer
     buffer = d3rlpy.dataset.ReplayBuffer(
@@ -174,7 +175,7 @@ def _online_training_with_mixed_pretraining_data(hyperparams, explorer, cache, m
     return cache
 
 
-def _online_training(hyperparams, explorer, cache, data_path, model_size, suffix, skip_from_scratch=False):
+def _LLM_data_collect_pretrain_finetune_exp(hyperparams, explorer, cache, data_path, model_size, suffix, skip_from_scratch=False):
     hyperparams["data_path"] = data_path # Restore data path for mixed pretraining runs
     cache = _online_training_from_pretrained_model(hyperparams, explorer, cache, model_size, suffix, 1000)
     cache = _online_training_from_pretrained_model(hyperparams, explorer, cache, model_size, suffix, 3000)
@@ -228,8 +229,8 @@ if __name__ == "__main__":
                        help="Use DeepSeek long CoT data paths")
     parser.add_argument("--n_pretrain_steps", type=int, default=1000,
                        help="Number of pretraining steps")
-    parser.add_argument("--awac", action="store_true", default=False,
-                       help="Using AWAC model")
+    parser.add_argument("--model", type=str, default="default", choices=["default", "awac", "ddpg"],
+                       help="Model type to use: 'default' (SAC/DoubleDQN), 'awac', or 'ddpg'")
     parser.add_argument("--n_steps_per_epoch", type=int, default=200,
                        help="Number of steps per epoch for training")
     parser.add_argument("--online_exp", action="store_true", default=False,
@@ -256,7 +257,7 @@ if __name__ == "__main__":
         "sft": args.sft,
         "long_cot": args.long_cot,
         "n_pretrain_steps": args.n_pretrain_steps,
-        "awac": args.awac,
+        "model": args.model,
         "n_steps_per_epoch": args.n_steps_per_epoch,
         "online_exp": args.online_exp,
         "online_rand": args.online_rand,
@@ -278,7 +279,7 @@ if __name__ == "__main__":
     if hyperparams["online_exp"] and path_32b is not None:
         print("Starting _online_training for 32b model...")
         start_time = time.time()
-        cache = _online_training(hyperparams, explorer, cache, path_32b, "32b", suffix)
+        cache = _LLM_data_collect_pretrain_finetune_exp(hyperparams, explorer, cache, path_32b, "32b", suffix)
         end_time = time.time()
         timing_data['_online_training_32b'] = end_time - start_time
         print(f"_online_training for 32b model completed in {timing_data['_online_training_32b']:.2f} seconds")
@@ -293,32 +294,33 @@ if __name__ == "__main__":
             skip_from_scratch = False
         print("Starting _online_training for 7b model...")
         start_time = time.time()
-        cache = _online_training(hyperparams, explorer, cache, path_7b, "7b", suffix, skip_from_scratch)
+        cache = _LLM_data_collect_pretrain_finetune_exp(hyperparams, explorer, cache, path_7b, "7b", suffix, skip_from_scratch)
         end_time = time.time()
         timing_data['_online_training_7b'] = end_time - start_time
         print(f"_online_training for 7b model completed in {timing_data['_online_training_7b']:.2f} seconds")
 
+    model_suffix = f"_{hyperparams['model']}" if hyperparams["model"] != "default" else ""
     with open(
-        f'data/cache_{hyperparams["env"].split("-")[0]}_Neps_{hyperparams["n_pretrain_eps"]}{suffix}{"_awac" if hyperparams["awac"] else ""}.pkl',
+        f'data/cache_{hyperparams["env"].split("-")[0]}_Neps_{hyperparams["n_pretrain_eps"]}{suffix}{model_suffix}.pkl',
         "wb",
     ) as file:
         pickle.dump(cache, file)
 
     # New experiments to test pretraining with online RL and Random data
     if hyperparams["online_rand"]:
-        print("Starting run_exp_and_save with random data...")
+        print("Starting non_LLM_data_collect_pretrain_finetune_exp with random data...")
         start_time = time.time()
-        run_exp_and_save(hyperparams, explorer, is_rand=True)
+        non_LLM_data_collect_pretrain_finetune_exp(hyperparams, explorer, is_rand=True)
         end_time = time.time()
-        timing_data['run_exp_and_save_rand'] = end_time - start_time
-        print(f"run_exp_and_save with random data completed in {timing_data['run_exp_and_save_rand']:.2f} seconds")
+        timing_data['non_LLM_data_collect_pretrain_finetune_exp_rand'] = end_time - start_time
+        print(f"non_LLM_data_collect_pretrain_finetune_exp with random data completed in {timing_data['non_LLM_data_collect_pretrain_finetune_exp_rand']:.2f} seconds")
         
-        print("Starting run_exp_and_save with pretrain data...")
+        print("Starting non_LLM_data_collect_pretrain_finetune_exp with init model data...")
         start_time = time.time()
-        run_exp_and_save(hyperparams, explorer, is_rand=False)
+        non_LLM_data_collect_pretrain_finetune_exp(hyperparams, explorer, is_rand=False)
         end_time = time.time()
-        timing_data['run_exp_and_save_pretrain'] = end_time - start_time
-        print(f"run_exp_and_save with pretrain data completed in {timing_data['run_exp_and_save_pretrain']:.2f} seconds")
+        timing_data['non_LLM_data_collect_pretrain_finetune_exp_init_model'] = end_time - start_time
+        print(f"non_LLM_data_collect_pretrain_finetune_exp with init model data completed in {timing_data['non_LLM_data_collect_pretrain_finetune_exp_init_model']:.2f} seconds")
     else:
         print("Skipping random and online fine-tune experiments (online_rand=False)")
     

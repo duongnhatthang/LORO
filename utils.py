@@ -155,12 +155,12 @@ def truncate_dataset(dataset, n_eps, env_name):
     return dataset_new
 
 
-def create_d3rlpy_model(env_name, batch_size, learning_rate, gamma, target_update_interval, gpu, awac=False):
-    if not awac:
+def create_d3rlpy_model(env_name, batch_size, learning_rate, gamma, target_update_interval, gpu, model_type="default"):
+    is_continuous = isinstance(gym.make(env_name).action_space, gym.spaces.Box)
+    
+    if model_type == "default":
         # Determine the algorithm based on the action space
-        if isinstance(
-            gym.make(env_name).action_space, gym.spaces.Box
-        ):  # Continuous action space
+        if is_continuous:  # Continuous action space
             model = d3rlpy.algos.SACConfig(
                 batch_size=batch_size,
                 gamma=gamma,
@@ -172,11 +172,9 @@ def create_d3rlpy_model(env_name, batch_size, learning_rate, gamma, target_updat
                 gamma=gamma,
                 target_update_interval=target_update_interval,
             ).create(device=gpu)
-    else:
+    elif model_type == "awac":
         # AWAC only works with continuous action spaces
-        if isinstance(
-            gym.make(env_name).action_space, gym.spaces.Box
-        ):  # Continuous action space
+        if is_continuous:  # Continuous action space
             model = d3rlpy.algos.AWACConfig(
                 batch_size=batch_size,
                 gamma=gamma,
@@ -189,6 +187,23 @@ def create_d3rlpy_model(env_name, batch_size, learning_rate, gamma, target_updat
                 gamma=gamma,
                 target_update_interval=target_update_interval,
             ).create(device=gpu)
+    elif model_type == "ddpg":
+        # DDPG only works with continuous action spaces
+        if is_continuous:  # Continuous action space
+            model = d3rlpy.algos.DDPGConfig(
+                batch_size=batch_size,
+                gamma=gamma,
+            ).create(device=gpu)
+        else:  # Discrete action space - fall back to DoubleDQN
+            print(f"Warning: DDPG is not compatible with discrete action spaces. Using DoubleDQN instead for {env_name}")
+            model = d3rlpy.algos.DoubleDQNConfig(
+                batch_size=batch_size,
+                learning_rate=learning_rate,
+                gamma=gamma,
+                target_update_interval=target_update_interval,
+            ).create(device=gpu)
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}. Must be one of: 'default', 'awac', 'ddpg'")
     return model
 
 
@@ -208,7 +223,7 @@ def pretrain_from_llm(dataset_path, hyperparams, model_size, suffix):
         dataset = pickle.load(file)
     dataset_new = truncate_dataset(dataset, hyperparams["n_pretrain_eps"], hyperparams["env"])
 
-    model = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["awac"])
+    model = create_d3rlpy_model(hyperparams["env"], hyperparams["batch_size"], hyperparams["learning_rate"], hyperparams["gamma"], hyperparams["target_update_interval"], hyperparams["gpu"], hyperparams["model"])
     # start offline training
     model.fit(
         dataset_new,

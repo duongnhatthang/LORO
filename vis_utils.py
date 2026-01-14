@@ -72,8 +72,22 @@ def processing_offline_online_data(avg_offline_returns, online_cache, n_pretrain
     std_returns[:n_pretrain_eps] = np.zeros(n_pretrain_eps)
     return average_returns, std_returns
 
-def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, mean_random, is_awac=False):
-    suffix = "" if not is_awac else "_awac"
+def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, mean_random, model_type="default"):
+    """
+    Load and aggregate caches for visualization.
+
+    Args:
+        hyperparams: dict with at least env, n_exp, n_episodes.
+        Qwen_7B, Qwen_32B, DS_7B, DS_14B, mean_random: reference curves.
+        model_type: training algorithm used to generate caches. Should match
+            the \"model\" argument in online_main.py: \"default\", \"awac\", or \"ddpg\".
+    """
+    if model_type not in ["default", "awac", "ddpg"]:
+        raise ValueError(f"Unsupported model_type '{model_type}'. Expected one of ['default', 'awac', 'ddpg'].")
+
+    # Match filename convention in online_main.py:
+    #   model_suffix = f\"_{hyperparams['model']}\" if hyperparams['model'] != 'default' else ''
+    suffix = "" if model_type == "default" else f"_{model_type}"
     cache10 = load_cache(hyperparams["env"].split("-")[0], 10, suffix)
     cache20 = load_cache(hyperparams["env"].split("-")[0], 20, suffix)
     cache30 = load_cache(hyperparams["env"].split("-")[0], 30, suffix)
@@ -297,20 +311,20 @@ def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, mean_random, is_
     return out_dict
 
 
-def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random, model_size="7b"):
+def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random, model_size="7b", pretrain_size=10, pretrain_step=1000):
     assert model_size in ["7b", "32b"], "model_size must be either '7b' or '32b'"
     plt.rcParams["font.size"] = 18
     plt.figure(figsize=(12, 6))
     plt.plot(
-        cache[f"mean_pretrain_{model_size}_1000_pre_10"],
+        cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"],
         label=f'LLM-pretrain',
     )
     plt.fill_between(
         cache["x"],
-        cache[f"mean_pretrain_{model_size}_1000_pre_10"]
-        - cache[f"std_pretrain_{model_size}_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        cache[f"mean_pretrain_{model_size}_1000_pre_10"]
-        + cache[f"std_pretrain_{model_size}_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"]
+        - cache[f"std_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"]
+        + cache[f"std_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"] / np.sqrt(hyperparams["n_exp"]),
         alpha=0.3,
     )
     plt.plot(
@@ -345,8 +359,9 @@ def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random, model_size="7b
     if "MountainCar" in hyperparams["env"]:
         plt.ylim(-210, -50)
     # plt.xticks(np.arange(0, 101, 10))
+    model_suffix = f"_{hyperparams.get('model', 'default')}" if hyperparams.get("model", "default") != "default" else ""
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_main{"_awac" if hyperparams["awac"] else ""}.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_main{model_suffix}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -354,20 +369,20 @@ def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random, model_size="7b
     plt.show()
 
 
-def plot_pretrain(hyperparams, cache, model_size="7b"):
+def plot_pretrain(hyperparams, cache, model_size="7b", pretrain_size=10, pretrain_step=1000):
     assert model_size in ["7b", "32b"], "model_size must be either '7b' or '32b'"
     plt.rcParams["font.size"] = 18
     plt.figure(figsize=(12, 6))
     plt.plot(
-        cache[f"mean_pretrain_{model_size}_1000_pre_10"],
+        cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"],
         label=f'LLM-pretrain',
     )
     plt.fill_between(
         cache["x"],
-        cache[f"mean_pretrain_{model_size}_1000_pre_10"]
-        - cache[f"std_pretrain_{model_size}_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        cache[f"mean_pretrain_{model_size}_1000_pre_10"]
-        + cache[f"std_pretrain_{model_size}_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"]
+        - cache[f"std_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"]
+        + cache[f"std_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"] / np.sqrt(hyperparams["n_exp"]),
         alpha=0.3,
     )
     plt.plot(
@@ -380,27 +395,27 @@ def plot_pretrain(hyperparams, cache, model_size="7b"):
         alpha=0.3,
     )
     plt.plot(
-        cache["mean_on_pol_pretrain_1000_pre_10"],
+        cache[f"mean_on_pol_pretrain_{pretrain_step}_pre_{pretrain_size}"],
         label=f'Pretrain w/ Online RL data',
     )
     plt.fill_between(
         cache["x"],
-        cache["mean_on_pol_pretrain_1000_pre_10"]
-        - cache["std_on_pol_pretrain_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        cache["mean_on_pol_pretrain_1000_pre_10"]
-        + cache["std_on_pol_pretrain_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_on_pol_pretrain_{pretrain_step}_pre_{pretrain_size}"]
+        - cache[f"std_on_pol_pretrain_{pretrain_step}_pre_{pretrain_size}"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_on_pol_pretrain_{pretrain_step}_pre_{pretrain_size}"]
+        + cache[f"std_on_pol_pretrain_{pretrain_step}_pre_{pretrain_size}"] / np.sqrt(hyperparams["n_exp"]),
         alpha=0.3,
     )
     plt.plot(
-        cache["mean_rand_pretrain_1000_pre_10"],
+        cache[f"mean_rand_pretrain_{pretrain_step}_pre_{pretrain_size}"],
         label=f'Pretrain w/ random policy data',
     )
     plt.fill_between(
         cache["x"],
-        cache["mean_rand_pretrain_1000_pre_10"]
-        - cache["std_rand_pretrain_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        cache["mean_rand_pretrain_1000_pre_10"]
-        + cache["std_rand_pretrain_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_rand_pretrain_{pretrain_step}_pre_{pretrain_size}"]
+        - cache[f"std_rand_pretrain_{pretrain_step}_pre_{pretrain_size}"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_rand_pretrain_{pretrain_step}_pre_{pretrain_size}"]
+        + cache[f"std_rand_pretrain_{pretrain_step}_pre_{pretrain_size}"] / np.sqrt(hyperparams["n_exp"]),
         alpha=0.3,
     )
 
@@ -415,8 +430,9 @@ def plot_pretrain(hyperparams, cache, model_size="7b"):
         plt.legend(loc="upper right")
     else:
         plt.legend(loc="lower right")
+    model_suffix = f"_{hyperparams.get('model', 'default')}" if hyperparams.get("model", "default") != "default" else ""
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_pretrain{"_awac" if hyperparams["awac"] else ""}.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_pretrain{model_suffix}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -424,20 +440,28 @@ def plot_pretrain(hyperparams, cache, model_size="7b"):
     plt.show()
 
 
-def plot_mix(hyperparams, cache, model_size="7b"):
+def plot_mix(hyperparams, cache, model_size="7b", pretrain_size=10, pretrain_step=1000):
     assert model_size in ["7b", "32b"], "model_size must be either '7b' or '32b'"
     plt.rcParams["font.size"] = 18
     plt.figure(figsize=(12, 6))
+    # Print cumulative rewards for each baseline
+    cum_loro = int(sum(cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"]))
+    cum_onl = int(sum(cache["mean_onl"]))
+    cum_mix = int(sum(cache[f"mean_mix_{model_size}_pre_{pretrain_size}"]))
+    print(f"LLM-pretrain cumulative reward: {cum_loro}")
+    print(f"Online RL cumulative reward: {cum_onl}")
+    print(f"Mix data w/o pretrain cumulative reward: {cum_mix}")
+
     plt.plot(
-        cache[f"mean_pretrain_{model_size}_1000_pre_10"],
+        cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"],
         label=f'LLM-pretrain',
     )
     plt.fill_between(
         cache["x"],
-        cache[f"mean_pretrain_{model_size}_1000_pre_10"]
-        - cache[f"std_pretrain_{model_size}_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        cache[f"mean_pretrain_{model_size}_1000_pre_10"]
-        + cache[f"std_pretrain_{model_size}_1000_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"]
+        - cache[f"std_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"]
+        + cache[f"std_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"] / np.sqrt(hyperparams["n_exp"]),
         alpha=0.3,
     )
     plt.plot(
@@ -450,15 +474,15 @@ def plot_mix(hyperparams, cache, model_size="7b"):
         alpha=0.3,
     )
     plt.plot(
-        cache[f"mean_mix_{model_size}_pre_10"],
+        cache[f"mean_mix_{model_size}_pre_{pretrain_size}"],
         label=f'Mix data w/o pretrain',
     )
     plt.fill_between(
         cache["x"],
-        cache[f"mean_mix_{model_size}_pre_10"]
-        - cache[f"std_mix_{model_size}_pre_10"] / np.sqrt(hyperparams["n_exp"]),
-        cache[f"mean_mix_{model_size}_pre_10"]
-        + cache[f"std_mix_{model_size}_pre_10"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_mix_{model_size}_pre_{pretrain_size}"]
+        - cache[f"std_mix_{model_size}_pre_{pretrain_size}"] / np.sqrt(hyperparams["n_exp"]),
+        cache[f"mean_mix_{model_size}_pre_{pretrain_size}"]
+        + cache[f"std_mix_{model_size}_pre_{pretrain_size}"] / np.sqrt(hyperparams["n_exp"]),
         alpha=0.3,
     )
 
@@ -473,8 +497,9 @@ def plot_mix(hyperparams, cache, model_size="7b"):
         plt.legend(loc="upper right")
     else:
         plt.legend(loc="lower right")
+    model_suffix = f"_{hyperparams.get('model', 'default')}" if hyperparams.get("model", "default") != "default" else ""
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_mix{"_awac" if hyperparams["awac"] else ""}.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_mix{model_suffix}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -561,8 +586,9 @@ def plot_sft_lcot(hyperparams, cache):
         )
     except:
         pass
+    model_suffix = f"_{hyperparams.get('model', 'default')}" if hyperparams.get("model", "default") != "default" else ""
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_sft_lcot{"_awac" if hyperparams["awac"] else ""}.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_sft_lcot{model_suffix}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -653,8 +679,9 @@ def plot_model_size(hyperparams, cache):
         axs[0, 0].legend(loc="upper right")
     else:
         axs[0, 0].legend(loc="lower right")
+    model_suffix = f"_{hyperparams.get('model', 'default')}" if hyperparams.get("model", "default") != "default" else ""
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_model_size{"_awac" if hyperparams["awac"] else ""}.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_model_size{model_suffix}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -747,8 +774,9 @@ def plot_pretrain_step(hyperparams, cache):
         axs[0, 0].legend(loc="upper right")
     else:
         axs[0, 0].legend(loc="lower right")
+    model_suffix = f"_{hyperparams.get('model', 'default')}" if hyperparams.get("model", "default") != "default" else ""
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_pretrain_step{"_awac" if hyperparams["awac"] else ""}.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_pretrain_step{model_suffix}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -867,8 +895,9 @@ def plot_pretrain_eps(hyperparams, cache):
         axs[0, 0].legend(loc="upper right")
     else:
         axs[0, 0].legend(loc="lower right")
+    model_suffix = f"_{hyperparams.get('model', 'default')}" if hyperparams.get("model", "default") != "default" else ""
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_pretrain_eps{"_awac" if hyperparams["awac"] else ""}.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_pretrain_eps{model_suffix}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -947,8 +976,9 @@ def plot_pretrain_big(hyperparams, cache):
         axs[0, 0].legend(loc="upper right")
     else:
         axs[0, 0].legend(loc="lower right")
+    model_suffix = f"_{hyperparams.get('model', 'default')}" if hyperparams.get("model", "default") != "default" else ""
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_pretrain_big{"_awac" if hyperparams["awac"] else ""}.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_pretrain_big{model_suffix}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -1087,8 +1117,9 @@ def plot_sft_lcot_big(hyperparams, cache):
         axs[0, 0].legend(loc="upper right")
     else:
         axs[0, 0].legend(loc="lower right")
+    model_suffix = f"_{hyperparams.get('model', 'default')}" if hyperparams.get("model", "default") != "default" else ""
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_sft_lcot_bigs{"_awac" if hyperparams["awac"] else ""}.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_sft_lcot_bigs{model_suffix}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
