@@ -1477,24 +1477,41 @@ def plot_observation_traces(dataset, width, height, episode_indices=None, figsiz
     
     return fig, ax
 
-def create_legend_rectangle(x_name, y_name, figsize=(12, 1.5), fontsize=9, save_path=None, marker_sizes=(8, 12, 8, 12), text_offset=0.035):
+def create_legend_rectangle(x_name, y_name, figsize=None, fontsize=9, save_path=None, marker_sizes=(8, 12, 8, 12), text_offset=0.035, item_positions=None, start_x=0.25, item_spacing=0.18, group_spacing=0.08, layout="two_lines", line_spacing=0.35):
     """
     Create a long, thin rectangle legend with four items: X Start, X End, Y Start, Y End.
     
     Args:
         x_name: Name for X dataset (e.g., "Qwen 7B")
         y_name: Name for Y dataset (e.g., "LLM-pretrain")
-        figsize: Figure size as tuple (width, height)
+        figsize: Figure size as tuple (width, height). If None, defaults to (6, 1.2) for
+            two_lines layout and (12, 1.5) for single_line layout.
         marker_sizes: Marker sizes in points. Can be a single number, a 2-tuple
             for (Start, End) repeated for both X and Y, or a 4-tuple/list for
             [X Start, X End, Y Start, Y End]
         text_offset: Horizontal space between marker and text in axes fraction
         save_path: Path to save the legend image. If None, doesn't save.
+        item_positions: Optional list/tuple of 4 x-positions for the legend items.
+            If provided, overrides start_x, item_spacing, and group_spacing.
+        start_x: Starting x position for the first item (default 0.25). Ignored if
+            item_positions is provided.
+        item_spacing: Horizontal spacing between items within a group (X Start to X End,
+            Y Start to Y End). Default 0.18. Ignored if item_positions is provided.
+        group_spacing: Additional spacing between the two groups (X End to Y Start).
+            Default 0.08. Only used in single_line layout. Ignored if item_positions is provided.
+        layout: Layout mode - "two_lines" (default) places X group on top line and Y group
+            on bottom line; "single_line" places all four items on one line.
+        line_spacing: Vertical spacing between the two lines in two_lines layout.
+            Default 0.35. Higher values increase the gap between lines.
     
     Returns:
         fig: matplotlib figure object
         ax: matplotlib axes object
     """
+    # Set default figsize based on layout
+    if figsize is None:
+        figsize = (6, 1.2) if layout == "two_lines" else (12, 1.5)
+    
     fig, ax = plt.subplots(figsize=figsize)
     # Remove all extra paddings/margins so content fills the figure
     fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
@@ -1516,16 +1533,39 @@ def create_legend_rectangle(x_name, y_name, figsize=(12, 1.5), fontsize=9, save_
         elif len(ms) != 4:
             ms = [8, 12, 8, 12]
 
-    # Y position for markers and labels (centered vertically)
-    y_marker = 0.5
-
-    positions = [0.03, 0.23+0.03, 0.53, 0.73]
+    # Compute positions based on layout mode
+    if layout == "two_lines":
+        # Two-line layout: X group on top, Y group on bottom
+        y_top = 0.5 + line_spacing / 2
+        y_bottom = 0.5 - line_spacing / 2
+        
+        if item_positions is not None:
+            x_positions = list(item_positions)
+            y_positions = [y_top, y_top, y_bottom, y_bottom]
+        else:
+            # Both groups start at same x position on their respective lines
+            x_positions = [start_x, start_x + item_spacing, start_x, start_x + item_spacing]
+            y_positions = [y_top, y_top, y_bottom, y_bottom]
+    else:
+        # Single-line layout: all four items on one line
+        y_positions = [0.5, 0.5, 0.5, 0.5]
+        
+        if item_positions is not None:
+            x_positions = list(item_positions)
+        else:
+            # Calculate positions: [X Start, X End, Y Start, Y End]
+            x_positions = [
+                start_x,
+                start_x + item_spacing,
+                start_x + 2 * item_spacing + group_spacing,
+                start_x + 3 * item_spacing + group_spacing
+            ]
 
     # Create each legend item
-    for pos, label, color, marker, size in zip(positions, labels, colors, markers, ms):
+    for x_pos, y_pos, label, color, marker, size in zip(x_positions, y_positions, labels, colors, markers, ms):
         # Draw the marker using scatter so circle stays circular regardless of aspect
         if marker == 'o':
-            ax.scatter([pos], [y_marker],
+            ax.scatter([x_pos], [y_pos],
                        s=size**2,
                        c=[color],
                        marker='o',
@@ -1533,7 +1573,7 @@ def create_legend_rectangle(x_name, y_name, figsize=(12, 1.5), fontsize=9, save_
                        linewidths=1,
                        alpha=0.9)
         else:
-            ax.scatter([pos], [y_marker],
+            ax.scatter([x_pos], [y_pos],
                        s=size**2,
                        c=[color],
                        marker='+',
@@ -1541,14 +1581,14 @@ def create_legend_rectangle(x_name, y_name, figsize=(12, 1.5), fontsize=9, save_
                        alpha=0.9)
 
         # Determine text position: prefer to the right, but keep inside bounds
-        if pos < 0.85:
-            text_x = pos + text_offset
+        if x_pos < 0.85:
+            text_x = x_pos + text_offset
             ha = 'left'
         else:
-            text_x = pos - text_offset
+            text_x = x_pos - text_offset
             ha = 'right'
 
-        ax.text(text_x, y_marker,
+        ax.text(text_x, y_pos,
                 label,
                 va='center',
                 ha=ha,
