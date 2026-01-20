@@ -2,7 +2,7 @@
 
 This repository is the official implementation of [Improving the Data-efficiency of Reinforcement Learning by Warm-starting with LLM](placeholder). 
 
-![](https://github.com/duongnhatthang/LlamaGym/blob/main/figs/loro.png)
+![](https://github.com/duongnhatthang/LORO/blob/main/figs/loro.png)
 
 ## Requirements
 
@@ -241,7 +241,7 @@ The notebooks load cached experiment results from `data/cache_*.pkl` files and g
 
 Our model achieves the following performance on six OpenAI Gym environments:
 
-![](https://github.com/duongnhatthang/LlamaGym/blob/main/figs/main_results.png)
+![](https://github.com/duongnhatthang/LORO/blob/main/figs/main_results.png)
 
 ## Troubleshooting
 
@@ -268,7 +268,7 @@ We investigate the usage of Large Language Models (LLMs) in collecting high-qual
 
 ## Contributing
 
-[Apache 2.0](https://github.com/duongnhatthang/LlamaGym/blob/main/LICENSE)
+[Apache 2.0](https://github.com/duongnhatthang/LORO/blob/main/LICENSE)
 
 ## Acknowledgments
 
