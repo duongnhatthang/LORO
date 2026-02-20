@@ -78,6 +78,38 @@ def interquartile_mean(a, axis=0):
     return np.apply_along_axis(iqm_1d, axis, a)
 
 
+def uncertainty_proxy_for_plot(a, axis=0, use_iqm=True, n_boot=200, seed=0):
+    """
+    Return an uncertainty proxy `u` compatible with existing plotting code that uses:
+        mean +/- u / sqrt(n_exp)
+
+    - If use_iqm=False: u is the per-step sample std over runs (legacy behavior).
+    - If use_iqm=True: u is bootstrap-SE(IQM) * sqrt(n_exp), so dividing by
+      sqrt(n_exp) in plotting yields bootstrap SE for the IQM estimator.
+    """
+    a = np.asarray(a, dtype=float)
+    n = a.shape[axis]
+    if n <= 1:
+        return np.zeros(a.shape[:axis] + a.shape[axis + 1 :], dtype=float)
+
+    if not use_iqm:
+        return np.std(a, axis=axis)
+
+    rng = np.random.default_rng(seed)
+
+    def _iqm_proxy_1d(x):
+        boot = np.empty(n_boot, dtype=float)
+        for b in range(n_boot):
+            x_boot = x[rng.integers(0, x.shape[0], size=x.shape[0])]
+            q25, q75 = np.percentile(x_boot, [25, 75])
+            in_iqr = (x_boot >= q25) & (x_boot <= q75)
+            boot[b] = np.mean(x_boot[in_iqr]) if np.any(in_iqr) else np.mean(x_boot)
+        se_iqm = np.std(boot, ddof=1) if n_boot > 1 else 0.0
+        return se_iqm * np.sqrt(x.shape[0])
+
+    return np.apply_along_axis(_iqm_proxy_1d, axis, a)
+
+
 def normalize_reward(x_raw, env_name, norm_const_dict):
     """
     Normalize reward curve: x_norm = (x_raw - x_random) / (x_expert - x_random).
@@ -122,7 +154,11 @@ def process_on_policy_pretrain(cache, n_pretrain_eps, n_episodes, n_pretrain_ste
                 print("Available keys:", list(cache.keys()))
         returns[i] = np.squeeze(np.array(cache[key][: n_pretrain_eps]+cache[key][-n_online_eps:]))
     mean_returns = interquartile_mean(returns, axis=0) if use_iqm else np.mean(returns, axis=0)
-    std_returns = np.std(returns, axis=0)
+    n_boot = int((hyperparams or {}).get("iqm_n_boot", 200))
+    seed = int((hyperparams or {}).get("iqm_bootstrap_seed", 0))
+    std_returns = uncertainty_proxy_for_plot(
+        returns, axis=0, use_iqm=use_iqm, n_boot=n_boot, seed=seed
+    )
     if hyperparams is not None:
         norm_const = hyperparams.get("norm_const_dict") or {}
         env_name = hyperparams.get("env")
@@ -150,7 +186,11 @@ def processing_offline_online_data(avg_offline_returns, online_cache, n_pretrain
         for j in range(n_episodes - n_pretrain_eps):
             returns[i][n_pretrain_eps + j] = online_cache[f"{online_cache_key}_{i}"][j]
     online_agg = interquartile_mean(returns, axis=0) if use_iqm else np.mean(returns, axis=0)
-    std_returns = np.std(returns, axis=0)
+    n_boot = int((hyperparams or {}).get("iqm_n_boot", 200))
+    seed = int((hyperparams or {}).get("iqm_bootstrap_seed", 0))
+    std_returns = uncertainty_proxy_for_plot(
+        returns, axis=0, use_iqm=use_iqm, n_boot=n_boot, seed=seed
+    )
     average_returns = np.empty(n_episodes)
     average_returns[:n_pretrain_eps] = avg_offline_returns[:n_pretrain_eps]
     average_returns[n_pretrain_eps:] = online_agg[n_pretrain_eps:]
@@ -309,7 +349,11 @@ def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, mean_random, mod
 
     x = range(hyperparams["n_episodes"])
     mean_onl = interquartile_mean(online_returns, axis=0) if use_iqm else np.mean(online_returns, axis=0)
-    std_onl = np.std(online_returns, axis=0)
+    n_boot = int((hyperparams or {}).get("iqm_n_boot", 200))
+    seed = int((hyperparams or {}).get("iqm_bootstrap_seed", 0))
+    std_onl = uncertainty_proxy_for_plot(
+        online_returns, axis=0, use_iqm=use_iqm, n_boot=n_boot, seed=seed
+    )
 
     norm_const = hyperparams.get("norm_const_dict") or {}
     env_base = hyperparams.get("env", "").split("-")[0] if hyperparams.get("env") else None
@@ -606,7 +650,7 @@ def plot_mix(hyperparams, cache, model_size="7b", pretrain_size=10, pretrain_ste
         plt.legend(loc="lower right")
     model_suffix = f"_{hyperparams.get('model', 'default')}" if hyperparams.get("model", "default") != "default" else ""
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_mix{model_suffix}.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_mix_{model_size}{model_suffix}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,

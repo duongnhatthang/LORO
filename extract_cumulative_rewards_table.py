@@ -23,7 +23,6 @@ import gymnasium as gym
 # Add project root for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from utils import get_llm_data_paths
 from vis_utils import extract_data, DEFAULT_NORM_CONST_DICT, get_pretrain_defaults
 
 # Six environments: (full env name, model type for cache suffix)
@@ -36,17 +35,22 @@ ENVS = [
     ("RepresentedPong-v0", "default"),
 ]
 
+# Keep this aligned with visualization.ipynb plot_mix(model_size=...)
+MIX_PRETRAIN_MODEL_SIZE = "32b"
 
-def baseline_specs_for_model(model_type):
+
+def baseline_specs_for_model(model_type, mix_pretrain_model_size=MIX_PRETRAIN_MODEL_SIZE):
     """Baseline display names and cache keys; pretrain size/step depend on model (ddpg vs default)."""
+    if mix_pretrain_model_size not in ("7b", "32b"):
+        raise ValueError("mix_pretrain_model_size must be '7b' or '32b'")
     pretrain_size, pretrain_step = get_pretrain_defaults(model_type)
     return [
-        ("LLM-pretrain", f"mean_pretrain_7b_{pretrain_step}_pre_{pretrain_size}"),
+        ("LLM-pretrain", f"mean_pretrain_{mix_pretrain_model_size}_{pretrain_step}_pre_{pretrain_size}"),
         ("Online RL", "mean_onl"),
         ("Qwen 7B", "Qwen_7B"),
         ("Qwen 32B", "Qwen_32B"),
         ("Random", "mean_random"),
-        ("Mix w/o pretrain", f"mean_mix_7b_pre_{pretrain_size}"),
+        ("Mix w/o pretrain", f"mean_mix_{mix_pretrain_model_size}_pre_{pretrain_size}"),
         ("Pretrain w/ Online RL data", f"mean_on_pol_pretrain_{pretrain_step}_pre_{pretrain_size}"),
         ("Pretrain w/ random policy data", f"mean_rand_pretrain_{pretrain_step}_pre_{pretrain_size}"),
     ]
@@ -124,6 +128,10 @@ def resolve_llm_path(path, env_base, size_key="7B"):
 
 def load_qwen_curves(env_name, n_episodes, sft=False, long_cot=False):
     """Load Qwen 7B and 32 B constant curves (mean reward per episode)."""
+    try:
+        from utils import get_llm_data_paths
+    except Exception:
+        return np.ones(n_episodes) * 0.0, np.ones(n_episodes) * 0.0
     path_7b, path_32b = get_llm_data_paths(env_name, sft=sft, long_cot=long_cot)
     env_base = env_name.split("-")[0]
     path_7b = resolve_llm_path(path_7b, env_base, "7B")
@@ -212,7 +220,7 @@ def extract_cumulative_rewards_for_env(env_name, model_type, n_exp=5, max_episod
         return None, str(e)
     except Exception as e:
         return None, str(e)
-    baseline_specs = baseline_specs_for_model(model_type)
+    baseline_specs = baseline_specs_for_model(model_type, MIX_PRETRAIN_MODEL_SIZE)
     results = {}
     for label, key in baseline_specs:
         if key not in cache:
@@ -236,7 +244,7 @@ def main():
             continue
         rows.append((env_display, res))
     # Build table: columns = baselines, rows = environments (average episode reward)
-    baseline_names = [s[0] for s in baseline_specs_for_model("default")]
+    baseline_names = [s[0] for s in baseline_specs_for_model("default", MIX_PRETRAIN_MODEL_SIZE)]
     env_col_width = max(len("Environment"), max(len(b) for b in env_display_names)) + 2
     # Per-column width: at least 12 for numbers, or full header length
     col_widths = [max(12, len(b)) for b in baseline_names]
