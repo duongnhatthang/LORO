@@ -34,7 +34,112 @@ def load_cache_on_policy_or_rand(env_name, is_rand=False):
         cache = pickle.load(file)
     return cache
 
-def process_on_policy_pretrain(cache, n_pretrain_eps, n_episodes, n_pretrain_steps, n_exp, is_rand=False):
+# Default normalization constants (x_random, x_expert) per env for reward normalization.
+# Override via hyperparams["norm_const_dict"]; keys are env base names (e.g. "CartPole", "FrozenLake").
+DEFAULT_NORM_CONST_DICT = {
+    "CartPole": {"x_random": 20.0, "x_expert": 200.0}, #x_expert = eps length
+    "CliffWalking": {"x_random": -2120, "x_expert": -13}, #x_random may be 10k
+    "FrozenLake": {"x_random": 0.03, "x_expert": 1.0},
+    "MountainCar": {"x_random": -200.0, "x_expert": -110.0},
+    "Pendulum": {"x_random": -1180, "x_expert": -150.0},
+    "RepresentedPong": {"x_random": -5, "x_expert": 21.0},
+}
+
+
+def get_pretrain_defaults(model):
+    """Default pretrain_size and pretrain_step from model type (for plotting / extract_data keys)."""
+    if model == "ddpg":
+        return 20, 3000
+    return 10, 1000
+
+
+def n_episodes_for_env(env_name):
+    """Default n_episodes by environment (visualization convention)."""
+    base = env_name.split("-")[0]
+    if base in ["CartPole", "FrozenLake"]:
+        return 150
+    if base in ["Pendulum", "CliffWalking", "RepresentedPong"]:
+        return 200
+    if base == "MountainCar":
+        return 300
+    return 200
+
+
+def interquartile_mean(a, axis=0):
+    """
+    Interquartile Mean (IQM): mean of values between 25th and 75th percentile along the given axis.
+    a: ndarray of shape (n_exp, ...); aggregation is over axis.
+    Returns: array of shape same as a but with axis removed.
+    """
+    def iqm_1d(x):
+        q25, q75 = np.percentile(x, [25, 75])
+        in_iqr = (x >= q25) & (x <= q75)
+        return np.mean(x[in_iqr]) if np.any(in_iqr) else np.mean(x)
+    return np.apply_along_axis(iqm_1d, axis, a)
+
+
+def uncertainty_proxy_for_plot(a, axis=0, use_iqm=True, n_boot=200, seed=0):
+    """
+    Return an uncertainty proxy `u` compatible with existing plotting code that uses:
+        mean +/- u / sqrt(n_exp)
+
+    - If use_iqm=False: u is the per-step sample std over runs (legacy behavior).
+    - If use_iqm=True: u is bootstrap-SE(IQM) * sqrt(n_exp), so dividing by
+      sqrt(n_exp) in plotting yields bootstrap SE for the IQM estimator.
+    """
+    a = np.asarray(a, dtype=float)
+    n = a.shape[axis]
+    if n <= 1:
+        return np.zeros(a.shape[:axis] + a.shape[axis + 1 :], dtype=float)
+
+    if not use_iqm:
+        return np.std(a, axis=axis)
+
+    rng = np.random.default_rng(seed)
+
+    def _iqm_proxy_1d(x):
+        boot = np.empty(n_boot, dtype=float)
+        for b in range(n_boot):
+            x_boot = x[rng.integers(0, x.shape[0], size=x.shape[0])]
+            q25, q75 = np.percentile(x_boot, [25, 75])
+            in_iqr = (x_boot >= q25) & (x_boot <= q75)
+            boot[b] = np.mean(x_boot[in_iqr]) if np.any(in_iqr) else np.mean(x_boot)
+        se_iqm = np.std(boot, ddof=1) if n_boot > 1 else 0.0
+        return se_iqm * np.sqrt(x.shape[0])
+
+    return np.apply_along_axis(_iqm_proxy_1d, axis, a)
+
+
+def normalize_reward(x_raw, env_name, norm_const_dict):
+    """
+    Normalize reward curve: x_norm = (x_raw - x_random) / (x_expert - x_random).
+    env_name: base env name (e.g. hyperparams["env"].split("-")[0]).
+    norm_const_dict: dict mapping env name to {"x_random": float, "x_expert": float}.
+    Returns x_raw unchanged if env_name not in norm_const_dict or denominator is zero.
+    """
+    if not norm_const_dict or env_name not in norm_const_dict:
+        return x_raw
+    r = norm_const_dict[env_name]["x_random"]
+    e = norm_const_dict[env_name]["x_expert"]
+    denom = e - r
+    if denom == 0:
+        return x_raw
+    return (np.asarray(x_raw, dtype=float) - r) / denom
+
+
+def normalize_reward_std(std_raw, env_name, norm_const_dict):
+    """Scale std by 1/(x_expert - x_random) when normalizing rewards."""
+    if not norm_const_dict or env_name not in norm_const_dict:
+        return std_raw
+    r = norm_const_dict[env_name]["x_random"]
+    e = norm_const_dict[env_name]["x_expert"]
+    denom = e - r
+    if denom == 0:
+        return std_raw
+    return np.asarray(std_raw, dtype=float) / denom
+
+
+def process_on_policy_pretrain(cache, n_pretrain_eps, n_episodes, n_pretrain_steps, n_exp, is_rand=False, use_iqm=True, hyperparams=None):
     n_online_eps = n_episodes - n_pretrain_eps
     returns = np.zeros((n_exp, n_episodes))
     for i in range(n_exp):
@@ -48,9 +153,23 @@ def process_on_policy_pretrain(cache, n_pretrain_eps, n_episodes, n_pretrain_ste
                 print(f"Key not found: {key}")
                 print("Available keys:", list(cache.keys()))
         returns[i] = np.squeeze(np.array(cache[key][: n_pretrain_eps]+cache[key][-n_online_eps:]))
-    return np.mean(returns, axis=0), np.std(returns, axis=0)
+    mean_returns = interquartile_mean(returns, axis=0) if use_iqm else np.mean(returns, axis=0)
+    n_boot = int((hyperparams or {}).get("iqm_n_boot", 200))
+    seed = int((hyperparams or {}).get("iqm_bootstrap_seed", 0))
+    std_returns = uncertainty_proxy_for_plot(
+        returns, axis=0, use_iqm=use_iqm, n_boot=n_boot, seed=seed
+    )
+    if hyperparams is not None:
+        norm_const = hyperparams.get("norm_const_dict") or {}
+        env_name = hyperparams.get("env")
+        if env_name is not None:
+            env_base = env_name.split("-")[0]
+            if env_base in norm_const:
+                mean_returns = normalize_reward(mean_returns, env_base, norm_const)
+                std_returns = normalize_reward_std(std_returns, env_base, norm_const)
+    return mean_returns, std_returns
 
-def processing_offline_online_data(avg_offline_returns, online_cache, n_pretrain_eps, online_cache_key, n_exp, n_episodes):
+def processing_offline_online_data(avg_offline_returns, online_cache, n_pretrain_eps, online_cache_key, n_exp, n_episodes, use_iqm=True, hyperparams=None):
     """
     Merge offline and the average of online data (offline_returns[:n_pretrain_eps] + average(online_cache[online_cache_key][-n_online_eps:])).
     avg_offline_returns: the returns of the offline data
@@ -66,21 +185,38 @@ def processing_offline_online_data(avg_offline_returns, online_cache, n_pretrain
     for i in range(n_exp):
         for j in range(n_episodes - n_pretrain_eps):
             returns[i][n_pretrain_eps + j] = online_cache[f"{online_cache_key}_{i}"][j]
-    average_returns = np.mean(returns, axis=0)
-    std_returns = np.std(returns, axis=0)
+    online_agg = interquartile_mean(returns, axis=0) if use_iqm else np.mean(returns, axis=0)
+    n_boot = int((hyperparams or {}).get("iqm_n_boot", 200))
+    seed = int((hyperparams or {}).get("iqm_bootstrap_seed", 0))
+    std_returns = uncertainty_proxy_for_plot(
+        returns, axis=0, use_iqm=use_iqm, n_boot=n_boot, seed=seed
+    )
+    average_returns = np.empty(n_episodes)
     average_returns[:n_pretrain_eps] = avg_offline_returns[:n_pretrain_eps]
+    average_returns[n_pretrain_eps:] = online_agg[n_pretrain_eps:]
     std_returns[:n_pretrain_eps] = np.zeros(n_pretrain_eps)
+    if hyperparams is not None:
+        norm_const = hyperparams.get("norm_const_dict") or {}
+        env_name = hyperparams.get("env")
+        if env_name is not None:
+            env_base = env_name.split("-")[0]
+            if env_base in norm_const:
+                average_returns = normalize_reward(average_returns, env_base, norm_const)
+                std_returns = normalize_reward_std(std_returns, env_base, norm_const)
     return average_returns, std_returns
 
-def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, mean_random, model_type="default"):
+def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, mean_random, model_type="default", use_iqm=True):
     """
     Load and aggregate caches for visualization.
 
     Args:
-        hyperparams: dict with at least env, n_exp, n_episodes.
+        hyperparams: dict with at least env, n_exp, n_episodes. May contain
+            norm_const_dict: dict mapping env base name to {"x_random": float, "x_expert": float}
+            for reward normalization (see normalize_reward). Use DEFAULT_NORM_CONST_DICT as template.
         Qwen_7B, Qwen_32B, DS_7B, DS_14B, mean_random: reference curves.
         model_type: training algorithm used to generate caches. Should match
             the \"model\" argument in online_main.py: \"default\", \"awac\", or \"ddpg\".
+        use_iqm: if True (default), use Interquartile Mean over runs; else use raw mean.
     """
     if model_type not in ["default", "awac", "ddpg"]:
         raise ValueError(f"Unsupported model_type '{model_type}'. Expected one of ['default', 'awac', 'ddpg'].")
@@ -99,12 +235,12 @@ def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, mean_random, mod
         cache20SFT = load_cache(hyperparams["env"].split("-")[0], 20, suffix)
         cache30SFT = load_cache(hyperparams["env"].split("-")[0], 30, suffix)
 
-        mean_pretrain_7b_1000_pre_10SFT, std_pretrain_7b_1000_pre_10SFT = processing_offline_online_data(Qwen_7B, cache10SFT, 10, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_7b_3000_pre_10SFT, std_pretrain_7b_3000_pre_10SFT = processing_offline_online_data(Qwen_7B, cache10SFT, 10, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_7b_1000_pre_20SFT, std_pretrain_7b_1000_pre_20SFT = processing_offline_online_data(Qwen_7B, cache20SFT, 20, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_7b_3000_pre_20SFT, std_pretrain_7b_3000_pre_20SFT = processing_offline_online_data(Qwen_7B, cache20SFT, 20, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_7b_1000_pre_30SFT, std_pretrain_7b_1000_pre_30SFT = processing_offline_online_data(Qwen_7B, cache30SFT, 30, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_7b_3000_pre_30SFT, std_pretrain_7b_3000_pre_30SFT = processing_offline_online_data(Qwen_7B, cache30SFT, 30, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_7b_1000_pre_10SFT, std_pretrain_7b_1000_pre_10SFT = processing_offline_online_data(Qwen_7B, cache10SFT, 10, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_7b_3000_pre_10SFT, std_pretrain_7b_3000_pre_10SFT = processing_offline_online_data(Qwen_7B, cache10SFT, 10, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_7b_1000_pre_20SFT, std_pretrain_7b_1000_pre_20SFT = processing_offline_online_data(Qwen_7B, cache20SFT, 20, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_7b_3000_pre_20SFT, std_pretrain_7b_3000_pre_20SFT = processing_offline_online_data(Qwen_7B, cache20SFT, 20, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_7b_1000_pre_30SFT, std_pretrain_7b_1000_pre_30SFT = processing_offline_online_data(Qwen_7B, cache30SFT, 30, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_7b_3000_pre_30SFT, std_pretrain_7b_3000_pre_30SFT = processing_offline_online_data(Qwen_7B, cache30SFT, 30, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
 
         out_dict_SFT = {
             "mean_pretrain_7b_1000_pre_10SFT": mean_pretrain_7b_1000_pre_10SFT,
@@ -128,18 +264,18 @@ def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, mean_random, mod
         cache20DS = load_cache(hyperparams["env"].split("-")[0], 20, suffix)
         cache30DS = load_cache(hyperparams["env"].split("-")[0], 30, suffix)
 
-        mean_pretrain_7b_1000_pre_10DS, std_pretrain_7b_1000_pre_10DS = processing_offline_online_data(DS_7B, cache10DS, 10, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_7b_3000_pre_10DS, std_pretrain_7b_3000_pre_10DS = processing_offline_online_data(DS_7B, cache10DS, 10, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_14b_1000_pre_10DS, std_pretrain_14b_1000_pre_10DS = processing_offline_online_data(DS_14B, cache10DS, 10, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_14b_3000_pre_10DS, std_pretrain_14b_3000_pre_10DS = processing_offline_online_data(DS_14B, cache10DS, 10, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_7b_1000_pre_20DS, std_pretrain_7b_1000_pre_20DS = processing_offline_online_data(DS_7B, cache20DS, 20, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_7b_3000_pre_20DS, std_pretrain_7b_3000_pre_20DS = processing_offline_online_data(DS_7B, cache20DS, 20, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_14b_1000_pre_20DS, std_pretrain_14b_1000_pre_20DS = processing_offline_online_data(DS_14B, cache20DS, 20, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_14b_3000_pre_20DS, std_pretrain_14b_3000_pre_20DS = processing_offline_online_data(DS_14B, cache20DS, 20, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_7b_1000_pre_30DS, std_pretrain_7b_1000_pre_30DS = processing_offline_online_data(DS_7B, cache30DS, 30, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_7b_3000_pre_30DS, std_pretrain_7b_3000_pre_30DS = processing_offline_online_data(DS_7B, cache30DS, 30, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_14b_1000_pre_30DS, std_pretrain_14b_1000_pre_30DS = processing_offline_online_data(DS_14B, cache30DS, 30, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-        mean_pretrain_14b_3000_pre_30DS, std_pretrain_14b_3000_pre_30DS = processing_offline_online_data(DS_14B, cache30DS, 30, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+        mean_pretrain_7b_1000_pre_10DS, std_pretrain_7b_1000_pre_10DS = processing_offline_online_data(DS_7B, cache10DS, 10, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_7b_3000_pre_10DS, std_pretrain_7b_3000_pre_10DS = processing_offline_online_data(DS_7B, cache10DS, 10, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_14b_1000_pre_10DS, std_pretrain_14b_1000_pre_10DS = processing_offline_online_data(DS_14B, cache10DS, 10, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_14b_3000_pre_10DS, std_pretrain_14b_3000_pre_10DS = processing_offline_online_data(DS_14B, cache10DS, 10, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_7b_1000_pre_20DS, std_pretrain_7b_1000_pre_20DS = processing_offline_online_data(DS_7B, cache20DS, 20, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_7b_3000_pre_20DS, std_pretrain_7b_3000_pre_20DS = processing_offline_online_data(DS_7B, cache20DS, 20, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_14b_1000_pre_20DS, std_pretrain_14b_1000_pre_20DS = processing_offline_online_data(DS_14B, cache20DS, 20, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_14b_3000_pre_20DS, std_pretrain_14b_3000_pre_20DS = processing_offline_online_data(DS_14B, cache20DS, 20, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_7b_1000_pre_30DS, std_pretrain_7b_1000_pre_30DS = processing_offline_online_data(DS_7B, cache30DS, 30, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_7b_3000_pre_30DS, std_pretrain_7b_3000_pre_30DS = processing_offline_online_data(DS_7B, cache30DS, 30, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_14b_1000_pre_30DS, std_pretrain_14b_1000_pre_30DS = processing_offline_online_data(DS_14B, cache30DS, 30, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+        mean_pretrain_14b_3000_pre_30DS, std_pretrain_14b_3000_pre_30DS = processing_offline_online_data(DS_14B, cache30DS, 30, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
 
         out_dict_DS = {
             "mean_pretrain_7b_1000_pre_10DS": mean_pretrain_7b_1000_pre_10DS,
@@ -173,47 +309,62 @@ def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, mean_random, mod
 
     on_policy_pretrain_cache = reformat_on_policy_pretrain_cache(on_policy_pretrain_cache, hyperparams["n_exp"], hyperparams["n_episodes"])
 
-    mean_on_pol_pretrain_1000_pre_10, std_on_pol_pretrain_1000_pre_10 = process_on_policy_pretrain(on_policy_pretrain_cache, 10, hyperparams["n_episodes"], 1000, hyperparams["n_exp"])
-    mean_on_pol_pretrain_3000_pre_10, std_on_pol_pretrain_3000_pre_10 = process_on_policy_pretrain(on_policy_pretrain_cache, 10, hyperparams["n_episodes"], 3000, hyperparams["n_exp"])
-    mean_on_pol_pretrain_1000_pre_20, std_on_pol_pretrain_1000_pre_20 = process_on_policy_pretrain(on_policy_pretrain_cache, 20, hyperparams["n_episodes"], 1000, hyperparams["n_exp"])
-    mean_on_pol_pretrain_3000_pre_20, std_on_pol_pretrain_3000_pre_20 = process_on_policy_pretrain(on_policy_pretrain_cache, 20, hyperparams["n_episodes"], 3000, hyperparams["n_exp"])
-    mean_on_pol_pretrain_1000_pre_30, std_on_pol_pretrain_1000_pre_30 = process_on_policy_pretrain(on_policy_pretrain_cache, 30, hyperparams["n_episodes"], 1000, hyperparams["n_exp"])
-    mean_on_pol_pretrain_3000_pre_30, std_on_pol_pretrain_3000_pre_30 = process_on_policy_pretrain(on_policy_pretrain_cache, 30, hyperparams["n_episodes"], 3000, hyperparams["n_exp"])
+    mean_on_pol_pretrain_1000_pre_10, std_on_pol_pretrain_1000_pre_10 = process_on_policy_pretrain(on_policy_pretrain_cache, 10, hyperparams["n_episodes"], 1000, hyperparams["n_exp"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_on_pol_pretrain_3000_pre_10, std_on_pol_pretrain_3000_pre_10 = process_on_policy_pretrain(on_policy_pretrain_cache, 10, hyperparams["n_episodes"], 3000, hyperparams["n_exp"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_on_pol_pretrain_1000_pre_20, std_on_pol_pretrain_1000_pre_20 = process_on_policy_pretrain(on_policy_pretrain_cache, 20, hyperparams["n_episodes"], 1000, hyperparams["n_exp"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_on_pol_pretrain_3000_pre_20, std_on_pol_pretrain_3000_pre_20 = process_on_policy_pretrain(on_policy_pretrain_cache, 20, hyperparams["n_episodes"], 3000, hyperparams["n_exp"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_on_pol_pretrain_1000_pre_30, std_on_pol_pretrain_1000_pre_30 = process_on_policy_pretrain(on_policy_pretrain_cache, 30, hyperparams["n_episodes"], 1000, hyperparams["n_exp"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_on_pol_pretrain_3000_pre_30, std_on_pol_pretrain_3000_pre_30 = process_on_policy_pretrain(on_policy_pretrain_cache, 30, hyperparams["n_episodes"], 3000, hyperparams["n_exp"], use_iqm=use_iqm, hyperparams=hyperparams)
 
-    mean_rand_pretrain_1000_pre_10, std_rand_pretrain_1000_pre_10 = process_on_policy_pretrain(rand_pretrain_cache, 10, hyperparams["n_episodes"], 1000, hyperparams["n_exp"], True)
-    mean_rand_pretrain_3000_pre_10, std_rand_pretrain_3000_pre_10 = process_on_policy_pretrain(rand_pretrain_cache, 10, hyperparams["n_episodes"], 3000, hyperparams["n_exp"], True)
-    mean_rand_pretrain_1000_pre_20, std_rand_pretrain_1000_pre_20 = process_on_policy_pretrain(rand_pretrain_cache, 20, hyperparams["n_episodes"], 1000, hyperparams["n_exp"], True)
-    mean_rand_pretrain_3000_pre_20, std_rand_pretrain_3000_pre_20 = process_on_policy_pretrain(rand_pretrain_cache, 20, hyperparams["n_episodes"], 3000, hyperparams["n_exp"], True)
-    mean_rand_pretrain_1000_pre_30, std_rand_pretrain_1000_pre_30 = process_on_policy_pretrain(rand_pretrain_cache, 30, hyperparams["n_episodes"], 1000, hyperparams["n_exp"], True)
-    mean_rand_pretrain_3000_pre_30, std_rand_pretrain_3000_pre_30 = process_on_policy_pretrain(rand_pretrain_cache, 30, hyperparams["n_episodes"], 3000, hyperparams["n_exp"], True)
+    mean_rand_pretrain_1000_pre_10, std_rand_pretrain_1000_pre_10 = process_on_policy_pretrain(rand_pretrain_cache, 10, hyperparams["n_episodes"], 1000, hyperparams["n_exp"], True, use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_rand_pretrain_3000_pre_10, std_rand_pretrain_3000_pre_10 = process_on_policy_pretrain(rand_pretrain_cache, 10, hyperparams["n_episodes"], 3000, hyperparams["n_exp"], True, use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_rand_pretrain_1000_pre_20, std_rand_pretrain_1000_pre_20 = process_on_policy_pretrain(rand_pretrain_cache, 20, hyperparams["n_episodes"], 1000, hyperparams["n_exp"], True, use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_rand_pretrain_3000_pre_20, std_rand_pretrain_3000_pre_20 = process_on_policy_pretrain(rand_pretrain_cache, 20, hyperparams["n_episodes"], 3000, hyperparams["n_exp"], True, use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_rand_pretrain_1000_pre_30, std_rand_pretrain_1000_pre_30 = process_on_policy_pretrain(rand_pretrain_cache, 30, hyperparams["n_episodes"], 1000, hyperparams["n_exp"], True, use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_rand_pretrain_3000_pre_30, std_rand_pretrain_3000_pre_30 = process_on_policy_pretrain(rand_pretrain_cache, 30, hyperparams["n_episodes"], 3000, hyperparams["n_exp"], True, use_iqm=use_iqm, hyperparams=hyperparams)
 
-    mean_mix_7b_pre_10, std_mix_7b_pre_10 = processing_offline_online_data(Qwen_7B, cache10, 10, "mix_7b", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_mix_32b_pre_10, std_mix_32b_pre_10 = processing_offline_online_data(Qwen_32B,  cache10, 10, "mix_32b", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_pretrain_32b_1000_pre_10, std_pretrain_32b_1000_pre_10 = processing_offline_online_data(Qwen_32B, cache10, 10, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_pretrain_7b_1000_pre_10, std_pretrain_7b_1000_pre_10 = processing_offline_online_data(Qwen_7B, cache10, 10, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_pretrain_32b_3000_pre_10, std_pretrain_32b_3000_pre_10 = processing_offline_online_data(Qwen_32B, cache10, 10, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_pretrain_7b_3000_pre_10, std_pretrain_7b_3000_pre_10 = processing_offline_online_data(Qwen_7B, cache10, 10, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_mix_7b_pre_10, std_mix_7b_pre_10 = processing_offline_online_data(Qwen_7B, cache10, 10, "mix_7b", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_mix_32b_pre_10, std_mix_32b_pre_10 = processing_offline_online_data(Qwen_32B,  cache10, 10, "mix_32b", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_pretrain_32b_1000_pre_10, std_pretrain_32b_1000_pre_10 = processing_offline_online_data(Qwen_32B, cache10, 10, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_pretrain_7b_1000_pre_10, std_pretrain_7b_1000_pre_10 = processing_offline_online_data(Qwen_7B, cache10, 10, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_pretrain_32b_3000_pre_10, std_pretrain_32b_3000_pre_10 = processing_offline_online_data(Qwen_32B, cache10, 10, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_pretrain_7b_3000_pre_10, std_pretrain_7b_3000_pre_10 = processing_offline_online_data(Qwen_7B, cache10, 10, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
     
-    mean_mix_7b_pre_20, std_mix_7b_pre_20 = processing_offline_online_data(Qwen_7B, cache20, 20, "mix_7b", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_mix_32b_pre_20, std_mix_32b_pre_20 = processing_offline_online_data(Qwen_32B,  cache20, 20, "mix_32b", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_pretrain_32b_1000_pre_20, std_pretrain_32b_1000_pre_20 = processing_offline_online_data(Qwen_32B, cache20, 20, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_pretrain_7b_1000_pre_20, std_pretrain_7b_1000_pre_20 = processing_offline_online_data(Qwen_7B, cache20, 20, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_pretrain_32b_3000_pre_20, std_pretrain_32b_3000_pre_20 = processing_offline_online_data(Qwen_32B, cache20, 20, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_pretrain_7b_3000_pre_20, std_pretrain_7b_3000_pre_20 = processing_offline_online_data(Qwen_7B, cache20, 20, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_mix_7b_pre_20, std_mix_7b_pre_20 = processing_offline_online_data(Qwen_7B, cache20, 20, "mix_7b", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_mix_32b_pre_20, std_mix_32b_pre_20 = processing_offline_online_data(Qwen_32B,  cache20, 20, "mix_32b", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_pretrain_32b_1000_pre_20, std_pretrain_32b_1000_pre_20 = processing_offline_online_data(Qwen_32B, cache20, 20, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_pretrain_7b_1000_pre_20, std_pretrain_7b_1000_pre_20 = processing_offline_online_data(Qwen_7B, cache20, 20, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_pretrain_32b_3000_pre_20, std_pretrain_32b_3000_pre_20 = processing_offline_online_data(Qwen_32B, cache20, 20, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_pretrain_7b_3000_pre_20, std_pretrain_7b_3000_pre_20 = processing_offline_online_data(Qwen_7B, cache20, 20, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
 
-    mean_mix_7b_pre_30, std_mix_7b_pre_30 = processing_offline_online_data(Qwen_7B, cache30, 30, "mix_7b", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_mix_32b_pre_30, std_mix_32b_pre_30 = processing_offline_online_data(Qwen_32B,  cache30, 30, "mix_32b", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_pretrain_32b_1000_pre_30, std_pretrain_32b_1000_pre_30 = processing_offline_online_data(Qwen_32B, cache30, 30, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_pretrain_7b_1000_pre_30, std_pretrain_7b_1000_pre_30 = processing_offline_online_data(Qwen_7B, cache30, 30, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_pretrain_32b_3000_pre_30, std_pretrain_32b_3000_pre_30 = processing_offline_online_data(Qwen_32B, cache30, 30, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
-    mean_pretrain_7b_3000_pre_30, std_pretrain_7b_3000_pre_30 = processing_offline_online_data(Qwen_7B, cache30, 30, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"])
+    mean_mix_7b_pre_30, std_mix_7b_pre_30 = processing_offline_online_data(Qwen_7B, cache30, 30, "mix_7b", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_mix_32b_pre_30, std_mix_32b_pre_30 = processing_offline_online_data(Qwen_32B,  cache30, 30, "mix_32b", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_pretrain_32b_1000_pre_30, std_pretrain_32b_1000_pre_30 = processing_offline_online_data(Qwen_32B, cache30, 30, "pretrain_32b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_pretrain_7b_1000_pre_30, std_pretrain_7b_1000_pre_30 = processing_offline_online_data(Qwen_7B, cache30, 30, "pretrain_7b_1000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_pretrain_32b_3000_pre_30, std_pretrain_32b_3000_pre_30 = processing_offline_online_data(Qwen_32B, cache30, 30, "pretrain_32b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
+    mean_pretrain_7b_3000_pre_30, std_pretrain_7b_3000_pre_30 = processing_offline_online_data(Qwen_7B, cache30, 30, "pretrain_7b_3000", hyperparams["n_exp"], hyperparams["n_episodes"], use_iqm=use_iqm, hyperparams=hyperparams)
 
     for i in range(hyperparams["n_exp"]):
         online_returns[i] = cache10[f"online_{i}"][: hyperparams["n_episodes"]]
 
     x = range(hyperparams["n_episodes"])
-    mean_onl = np.mean(online_returns, axis=0)
-    std_onl = np.std(online_returns, axis=0)
+    mean_onl = interquartile_mean(online_returns, axis=0) if use_iqm else np.mean(online_returns, axis=0)
+    n_boot = int((hyperparams or {}).get("iqm_n_boot", 200))
+    seed = int((hyperparams or {}).get("iqm_bootstrap_seed", 0))
+    std_onl = uncertainty_proxy_for_plot(
+        online_returns, axis=0, use_iqm=use_iqm, n_boot=n_boot, seed=seed
+    )
+
+    norm_const = hyperparams.get("norm_const_dict") or {}
+    env_base = hyperparams.get("env", "").split("-")[0] if hyperparams.get("env") else None
+    if env_base and env_base in norm_const:
+        mean_onl = normalize_reward(mean_onl, env_base, norm_const)
+        std_onl = normalize_reward_std(std_onl, env_base, norm_const)
+        mean_random = normalize_reward(mean_random, env_base, norm_const)
+        Qwen_7B = normalize_reward(Qwen_7B, env_base, norm_const)
+        Qwen_32B = normalize_reward(Qwen_32B, env_base, norm_const)
+        DS_7B = normalize_reward(DS_7B, env_base, norm_const)
+        DS_14B = normalize_reward(DS_14B, env_base, norm_const)
 
     out_dict = {
         "x": x,
@@ -313,11 +464,17 @@ def extract_data(hyperparams, Qwen_7B, Qwen_32B, DS_7B, DS_14B, mean_random, mod
 
 def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random, model_size="7b", pretrain_size=10, pretrain_step=1000):
     assert model_size in ["7b", "32b"], "model_size must be either '7b' or '32b'"
+    norm_const = hyperparams.get("norm_const_dict") or {}
+    env_base = hyperparams.get("env", "").split("-")[0] if hyperparams.get("env") else None
+    if env_base and env_base in norm_const:
+        Qwen_7B = normalize_reward(Qwen_7B, env_base, norm_const)
+        Qwen_32B = normalize_reward(Qwen_32B, env_base, norm_const)
+        mean_random = normalize_reward(mean_random, env_base, norm_const)
     plt.rcParams["font.size"] = 18
     plt.figure(figsize=(12, 6))
     plt.plot(
         cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"],
-        label=f'LLM-pretrain',
+        label=f'LLM-data-pretrain',
     )
     plt.fill_between(
         cache["x"],
@@ -354,10 +511,8 @@ def plot_main(hyperparams, cache, Qwen_7B, Qwen_32B, mean_random, model_size="7b
         plt.legend(loc="lower right")
     # plt.grid(True)
     # plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
-    if "Cliff" in hyperparams["env"]:
-        plt.ylim(-500, 0)
-    if "MountainCar" in hyperparams["env"]:
-        plt.ylim(-210, -50)
+    if "Cliff" in hyperparams["env"] or "MountainCar" in hyperparams["env"]:
+        plt.ylim(-0.5, 1.5)
     # plt.xticks(np.arange(0, 101, 10))
     model_suffix = f"_{hyperparams.get('model', 'default')}" if hyperparams.get("model", "default") != "default" else ""
     plt.savefig(
@@ -375,7 +530,7 @@ def plot_pretrain(hyperparams, cache, model_size="7b", pretrain_size=10, pretrai
     plt.figure(figsize=(12, 6))
     plt.plot(
         cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"],
-        label=f'LLM-pretrain',
+        label=f'LLM-data-pretrain',
     )
     plt.fill_between(
         cache["x"],
@@ -423,9 +578,7 @@ def plot_pretrain(hyperparams, cache, model_size="7b", pretrain_size=10, pretrai
     plt.xlabel("# of episodes")
     plt.ylabel("Episode reward")
     if "Cliff" in hyperparams["env"] or "MountainCar" in hyperparams["env"]:
-        plt.ylim(-500, 0)
-    if "MountainCar" in hyperparams["env"]:
-        plt.ylim(-210, -50)
+        plt.ylim(-0.5, 1.5)
     if "MountainCar" in hyperparams["env"] or "RepresentedPong" in hyperparams["env"]:
         plt.legend(loc="upper right")
     else:
@@ -448,13 +601,13 @@ def plot_mix(hyperparams, cache, model_size="7b", pretrain_size=10, pretrain_ste
     cum_loro = int(sum(cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"]))
     cum_onl = int(sum(cache["mean_onl"]))
     cum_mix = int(sum(cache[f"mean_mix_{model_size}_pre_{pretrain_size}"]))
-    print(f"LLM-pretrain cumulative reward: {cum_loro}")
+    print(f"LLM-data-pretrain cumulative reward: {cum_loro}")
     print(f"Online RL cumulative reward: {cum_onl}")
     print(f"Mix data w/o pretrain cumulative reward: {cum_mix}")
 
     plt.plot(
         cache[f"mean_pretrain_{model_size}_{pretrain_step}_pre_{pretrain_size}"],
-        label=f'LLM-pretrain',
+        label=f'LLM-data-pretrain',
     )
     plt.fill_between(
         cache["x"],
@@ -489,17 +642,15 @@ def plot_mix(hyperparams, cache, model_size="7b", pretrain_size=10, pretrain_ste
     plt.title(f'{hyperparams["env"].split("-")[0]}')
     plt.xlabel("# of episodes")
     plt.ylabel("Episode reward")
-    if "Cliff" in hyperparams["env"]:
-        plt.ylim(-500, 0)
-    if "MountainCar" in hyperparams["env"]:
-        plt.ylim(-210, -50)
+    if "Cliff" in hyperparams["env"] or "MountainCar" in hyperparams["env"]:
+        plt.ylim(-0.5, 1.5)
     if "MountainCar" in hyperparams["env"] or "RepresentedPong" in hyperparams["env"]:
         plt.legend(loc="upper right")
     else:
         plt.legend(loc="lower right")
     model_suffix = f"_{hyperparams.get('model', 'default')}" if hyperparams.get("model", "default") != "default" else ""
     plt.savefig(
-        f'figs/{hyperparams["env"].split("-")[0]}_mix{model_suffix}.pdf',
+        f'figs/{hyperparams["env"].split("-")[0]}_mix_{model_size}{model_suffix}.pdf',
         format="pdf",
         bbox_inches="tight",
         pad_inches=0.1,
@@ -513,7 +664,7 @@ def plot_sft_lcot(hyperparams, cache):
         plt.figure(figsize=(12, 6))
         plt.plot(
             cache["mean_pretrain_7b_1000_pre_10"],
-            label=f'LLM-pretrain. Cum. reward={int(sum(cache["mean_pretrain_7b_1000_pre_10"]))}',
+            label=f'LLM-data-pretrain. Cum. reward={int(sum(cache["mean_pretrain_7b_1000_pre_10"]))}',
         )
         plt.fill_between(
             cache["x"],
@@ -549,10 +700,8 @@ def plot_sft_lcot(hyperparams, cache):
         plt.title(f'{hyperparams["env"].split("-")[0]}')
         plt.xlabel("# of episodes")
         plt.ylabel("Episode reward")
-        if "Cliff" in hyperparams["env"]:
-            plt.ylim(-500, 0)
-        if "MountainCar" in hyperparams["env"]:
-            plt.ylim(-210, -50)
+        if "Cliff" in hyperparams["env"] or "MountainCar" in hyperparams["env"]:
+            plt.ylim(-0.5, 1.5)
         if "MountainCar" in hyperparams["env"]:
             plt.legend(loc="upper right")
         else:
@@ -638,7 +787,7 @@ def plot_model_size(hyperparams, cache):
             smooth_mean_loro32 = rbf(cache["x"])
 
             axs[j, i].plot(
-                smooth_mean_loro7, label=f"LLM-pretrain 7B. Cum. reward={int(sum(mean_loro7))}"
+                smooth_mean_loro7, label=f"LLM-data-pretrain 7B. Cum. reward={int(sum(mean_loro7))}"
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -648,7 +797,7 @@ def plot_model_size(hyperparams, cache):
             )
             axs[j, i].plot(
                 smooth_mean_loro32,
-                label=f"LLM-pretrain 32B. Cum. reward={int(sum(mean_loro32))}",
+                label=f"LLM-data-pretrain 32B. Cum. reward={int(sum(mean_loro32))}",
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -670,10 +819,8 @@ def plot_model_size(hyperparams, cache):
             axs[j, i].set_title(f"Smoothed pretrain {i+1}0 eps, {pretrain_step} steps")
             axs[j, i].set_xlabel("# of episodes")
             axs[j, i].set_ylabel("Episode reward")
-            if "Cliff" in hyperparams["env"]:
-                axs[j, i].set_ylim(-500, 0)
-            if "MountainCar" in hyperparams["env"]:
-                axs[j, i].set_ylim(-210, -50)
+            if "Cliff" in hyperparams["env"] or "MountainCar" in hyperparams["env"]:
+                axs[j, i].set_ylim(-0.5, 1.5)
 
     if "MountainCar" in hyperparams["env"]:
         axs[0, 0].legend(loc="upper right")
@@ -733,7 +880,7 @@ def plot_pretrain_step(hyperparams, cache):
 
             axs[j, i].plot(
                 smooth_mean_loro_1k,
-                label=f"LLM-pretrain 1k pretrain steps. Cum. reward={int(sum(mean_loro_1k))}",
+                label=f"LLM-data-pretrain 1k pretrain steps. Cum. reward={int(sum(mean_loro_1k))}",
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -743,7 +890,7 @@ def plot_pretrain_step(hyperparams, cache):
             )
             axs[j, i].plot(
                 smooth_mean_loro_3k,
-                label=f"LLM-pretrain 3k pretrain steps. Cum. reward={int(sum(mean_loro_3k))}",
+                label=f"LLM-data-pretrain 3k pretrain steps. Cum. reward={int(sum(mean_loro_3k))}",
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -765,10 +912,8 @@ def plot_pretrain_step(hyperparams, cache):
             axs[j, i].set_title(f"Smoothed pretrain {i+1}0 eps, {model_size}B")
             axs[j, i].set_xlabel("# of episodes")
             axs[j, i].set_ylabel("Episode reward")
-            if "Cliff" in hyperparams["env"]:
-                axs[j, i].set_ylim(-500, 0)
-            if "MountainCar" in hyperparams["env"]:
-                axs[j, i].set_ylim(-210, -50)
+            if "Cliff" in hyperparams["env"] or "MountainCar" in hyperparams["env"]:
+                axs[j, i].set_ylim(-0.5, 1.5)
 
     if "MountainCar" in hyperparams["env"]:
         axs[0, 0].legend(loc="upper right")
@@ -843,7 +988,7 @@ def plot_pretrain_eps(hyperparams, cache):
 
             axs[j, i].plot(
                 smooth_mean_loro_10,
-                label=f"LLM-pretrain 10 pretrain eps. Cum. reward={int(sum(mean_loro_10))}",
+                label=f"LLM-data-pretrain 10 pretrain eps. Cum. reward={int(sum(mean_loro_10))}",
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -853,7 +998,7 @@ def plot_pretrain_eps(hyperparams, cache):
             )
             axs[j, i].plot(
                 smooth_mean_loro_20,
-                label=f"LLM-pretrain 20 pretrain eps. Cum. reward={int(sum(mean_loro_20))}",
+                label=f"LLM-data-pretrain 20 pretrain eps. Cum. reward={int(sum(mean_loro_20))}",
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -863,7 +1008,7 @@ def plot_pretrain_eps(hyperparams, cache):
             )
             axs[j, i].plot(
                 smooth_mean_loro_30,
-                label=f"LLM-pretrain 30 pretrain eps. Cum. reward={int(sum(mean_loro_30))}",
+                label=f"LLM-data-pretrain 30 pretrain eps. Cum. reward={int(sum(mean_loro_30))}",
             )
             axs[j, i].fill_between(
                 cache["x"],
@@ -886,10 +1031,8 @@ def plot_pretrain_eps(hyperparams, cache):
             )
             axs[j, i].set_xlabel("# of episodes")
             axs[j, i].set_ylabel("Episode reward")
-            if "Cliff" in hyperparams["env"]:
-                axs[j, i].set_ylim(-500, 0)
-            if "MountainCar" in hyperparams["env"]:
-                axs[j, i].set_ylim(-210, -50)
+            if "Cliff" in hyperparams["env"] or "MountainCar" in hyperparams["env"]:
+                axs[j, i].set_ylim(-0.5, 1.5)
 
     if "MountainCar" in hyperparams["env"]:
         axs[0, 0].legend(loc="upper right")
@@ -930,7 +1073,7 @@ def plot_pretrain_big(hyperparams, cache):
             std_rand = cache[f"std_rand_pretrain_{pretrain_step}_pre_{i+1}0"] / np.sqrt(
                 hyperparams["n_exp"]
             )
-            axs[j, i].plot(mean_loro, label=f"LLM-pretrain. Cum. reward={int(sum(mean_loro))}")
+            axs[j, i].plot(mean_loro, label=f"LLM-data-pretrain. Cum. reward={int(sum(mean_loro))}")
             axs[j, i].fill_between(
                 cache["x"], mean_loro - std_loro, mean_loro + std_loro, alpha=0.3
             )
@@ -967,10 +1110,8 @@ def plot_pretrain_big(hyperparams, cache):
             )
             axs[j, i].set_xlabel("# of episodes")
             axs[j, i].set_ylabel("Episode reward")
-            if "Cliff" in hyperparams["env"]:
-                axs[j, i].set_ylim(-500, 0)
-            if "MountainCar" in hyperparams["env"]:
-                axs[j, i].set_ylim(-210, -50)
+            if "Cliff" in hyperparams["env"] or "MountainCar" in hyperparams["env"]:
+                axs[j, i].set_ylim(-0.5, 1.5)
 
     if "MountainCar" in hyperparams["env"]:
         axs[0, 0].legend(loc="upper right")
@@ -1028,7 +1169,7 @@ def plot_sft_lcot_big(hyperparams, cache):
                 smooth_mean_sft = rbf(cache["x"])
 
                 axs[j, i].plot(
-                    smooth_mean_loro, label=f"LLM-pretrain. Cum. reward={int(sum(mean_loro))}"
+                    smooth_mean_loro, label=f"LLM-data-pretrain. Cum. reward={int(sum(mean_loro))}"
                 )
                 axs[j, i].fill_between(
                     cache["x"],
@@ -1061,10 +1202,8 @@ def plot_sft_lcot_big(hyperparams, cache):
                 )
                 axs[j, i].set_xlabel("# of episodes")
                 axs[j, i].set_ylabel("Episode reward")
-                if "Cliff" in hyperparams["env"]:
-                    axs[j, i].set_ylim(-500, 0)
-                if "MountainCar" in hyperparams["env"]:
-                    axs[j, i].set_ylim(-210, -50)
+                if "Cliff" in hyperparams["env"] or "MountainCar" in hyperparams["env"]:
+                    axs[j, i].set_ylim(-0.5, 1.5)
             except Exception as e:
                 print(e)
             try:
