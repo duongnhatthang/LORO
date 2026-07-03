@@ -26,7 +26,7 @@ def make_env(env_name):
     return env, eval_env
 
 
-def load_qwen_curves(env_name, n_episodes, n_pretrain_eps=30, sft=False, long_cot=False):
+def load_qwen_curves(env_name, n_episodes, n_pretrain_eps=10, sft=False, long_cot=False):
     """
     Load Qwen 7B and 32B datasets and return constant per-episode curves (mean reward).
     Returns: Qwen_7B, Qwen_32B (each is a list of length n_episodes).

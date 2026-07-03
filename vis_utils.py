@@ -45,6 +45,22 @@ DEFAULT_NORM_CONST_DICT = {
     "RepresentedPong": {"x_random": -5, "x_expert": 21.0},
 }
 
+import json as _json
+import os as _os
+
+NORM_CONSTANTS_PATH = "data/norm_constants.json"
+
+
+def load_norm_constants():
+    """Measured constants override the hardcoded defaults; hardcoded fill any gaps."""
+    merged = {k: dict(v) for k, v in DEFAULT_NORM_CONST_DICT.items()}
+    if _os.path.exists(NORM_CONSTANTS_PATH):
+        with open(NORM_CONSTANTS_PATH) as f:
+            measured = _json.load(f)
+        for env, vals in measured.items():
+            merged.setdefault(env, {}).update(vals)
+    return merged
+
 
 def get_pretrain_defaults(model):
     """Default pretrain_size and pretrain_step from model type (for plotting / extract_data keys)."""
@@ -169,7 +185,7 @@ def process_on_policy_pretrain(cache, n_pretrain_eps, n_episodes, n_pretrain_ste
                 std_returns = normalize_reward_std(std_returns, env_base, norm_const)
     return mean_returns, std_returns
 
-def processing_offline_online_data(avg_offline_returns, online_cache, n_pretrain_eps, online_cache_key, n_exp, n_episodes, use_iqm=True, hyperparams=None):
+def processing_offline_online_data(avg_offline_returns, online_cache, n_pretrain_eps, online_cache_key, n_exp, n_episodes, use_iqm=True, hyperparams=None, warmstart_mode="constant", warmstart_per_episode=None):
     """
     Merge offline and the average of online data (offline_returns[:n_pretrain_eps] + average(online_cache[online_cache_key][-n_online_eps:])).
     avg_offline_returns: the returns of the offline data
@@ -181,20 +197,35 @@ def processing_offline_online_data(avg_offline_returns, online_cache, n_pretrain
 
     Returns: the merged data
     """
-    returns = np.zeros((n_exp, n_episodes))
+    # The online curve may be shorter than (n_episodes - n_pretrain_eps) for
+    # reduced-budget first-pass runs. Size everything to the ACTUAL online budget
+    # so the AUC/mean isn't polluted by trailing zeros. A full-budget run
+    # (len == n_episodes - n_pretrain_eps) yields total == n_episodes, i.e. the
+    # original behavior exactly.
+    first_curve = online_cache[f"{online_cache_key}_0"]
+    n_online = min(n_episodes - n_pretrain_eps, len(first_curve))
+    total = n_pretrain_eps + n_online
+    returns = np.zeros((n_exp, total))
     for i in range(n_exp):
-        for j in range(n_episodes - n_pretrain_eps):
-            returns[i][n_pretrain_eps + j] = online_cache[f"{online_cache_key}_{i}"][j]
+        curve = online_cache[f"{online_cache_key}_{i}"]
+        for j in range(n_online):
+            returns[i][n_pretrain_eps + j] = curve[j]
     online_agg = interquartile_mean(returns, axis=0) if use_iqm else np.mean(returns, axis=0)
     n_boot = int((hyperparams or {}).get("iqm_n_boot", 200))
     seed = int((hyperparams or {}).get("iqm_bootstrap_seed", 0))
     std_returns = uncertainty_proxy_for_plot(
         returns, axis=0, use_iqm=use_iqm, n_boot=n_boot, seed=seed
     )
-    average_returns = np.empty(n_episodes)
-    average_returns[:n_pretrain_eps] = avg_offline_returns[:n_pretrain_eps]
+    average_returns = np.empty(total)
     average_returns[n_pretrain_eps:] = online_agg[n_pretrain_eps:]
-    std_returns[:n_pretrain_eps] = np.zeros(n_pretrain_eps)
+    if warmstart_mode == "per_episode" and warmstart_per_episode is not None:
+        wp = np.asarray(warmstart_per_episode, dtype=float)[:n_pretrain_eps]
+        average_returns[:n_pretrain_eps] = wp
+        # real spread across the tau warm-start episodes (broadcast as a per-step proxy band)
+        std_returns[:n_pretrain_eps] = float(np.std(wp)) if wp.size > 1 else 0.0
+    else:  # "constant": flat line at the LLM mean, no learning happens here
+        average_returns[:n_pretrain_eps] = avg_offline_returns[:n_pretrain_eps]
+        std_returns[:n_pretrain_eps] = np.zeros(n_pretrain_eps)
     if hyperparams is not None:
         norm_const = hyperparams.get("norm_const_dict") or {}
         env_name = hyperparams.get("env")

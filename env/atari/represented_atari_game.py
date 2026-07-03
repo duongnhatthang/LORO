@@ -1,8 +1,11 @@
 import gymnasium as gym
-import ale_py
 import numpy as np
-from atariari.benchmark.wrapper import AtariARIWrapper
 from typing import Optional, Union
+
+# NOTE: `ale_py` and `atariari` are imported lazily inside RepresentedAtariEnv
+# (the only place they are needed). This lets the non-Atari collection path
+# (CliffWalking, FrozenLake, CartPole, MountainCar, Pendulum, ...) import
+# GymCompatWrapper without installing the heavy Atari stack.
 
 
 class GymCompatWrapper:
@@ -80,6 +83,9 @@ class RepresentedAtariEnv(gym.Wrapper):
     def __init__(
         self, env_name, render_mode=None, frameskip=4, repeat_action_probability=0.0
     ):
+        import ale_py  # noqa: F401  (registers ALE envs with gymnasium as a side effect)
+        from atariari.benchmark.wrapper import AtariARIWrapper
+
         if frameskip > 0:
             self.env = MaxAndSkip(
                 AtariARIWrapper(

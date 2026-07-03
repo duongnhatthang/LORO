@@ -23,7 +23,38 @@ import gymnasium as gym
 # Add project root for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from vis_utils import extract_data, DEFAULT_NORM_CONST_DICT, get_pretrain_defaults
+from vis_utils import extract_data, DEFAULT_NORM_CONST_DICT, get_pretrain_defaults, load_norm_constants
+from stats_utils import paired_bootstrap_diff
+
+def format_paired_diff_block(env_name, method_per_seed, baseline_per_seed,
+                             method_label="LLM-pretrain", baseline_label="Online RL",
+                             n_boot=10000, seed=0):
+    """Return a human-readable string for paired bootstrap diff (method - baseline).
+
+    Args:
+        env_name: display name for the environment.
+        method_per_seed: list of per-seed scalar values (e.g. AUC) for the method arm.
+        baseline_per_seed: list of per-seed scalar values for the baseline arm.
+        method_label: label for the method arm (default "LLM-pretrain").
+        baseline_label: label for the baseline arm (default "Online RL").
+        n_boot: number of bootstrap resamples.
+        seed: random seed for reproducibility.
+
+    Returns:
+        A formatted multi-line string ready for printing, e.g.:
+            [CartPole] LLM-pretrain - Online RL:
+              mean_diff=0.42  95% CI [0.11, 0.73]  p=0.0040  (n=5 seeds)
+    """
+    r = paired_bootstrap_diff(method_per_seed, baseline_per_seed, n_boot=n_boot, seed=seed)
+    n = len(method_per_seed)
+    sig_flag = " *" if r["p_value"] < 0.05 else ""
+    return (
+        f"[{env_name}] {method_label} - {baseline_label}:\n"
+        f"  mean_diff={r['mean_diff']:.4f}  "
+        f"95% CI [{r['ci_low']:.4f}, {r['ci_high']:.4f}]  "
+        f"p={r['p_value']:.4f}  (n={n} seeds){sig_flag}"
+    )
+
 
 # Six environments: (full env name, model type for cache suffix)
 ENVS = [
@@ -31,7 +62,7 @@ ENVS = [
     ("CliffWalking-v0", "default"),
     ("FrozenLake-v1", "default"),
     ("MountainCar-v0", "default"),
-    ("Pendulum-v1", "default"),
+    ("Pendulum-v1", "ddpg"),
     ("RepresentedPong-v0", "default"),
 ]
 
@@ -57,6 +88,12 @@ def baseline_specs_for_model(model_type, mix_pretrain_model_size=MIX_PRETRAIN_MO
 
 
 def n_episodes_for_env(env_name):
+    # Total-budget override for reduced-budget first-pass runs. Set
+    # LORO_N_EPISODES to tau_min + n_online_eps (e.g. 10+60=70) so the short
+    # online curves consistently fill the budget across tau in {10,20,30}.
+    _override = os.environ.get("LORO_N_EPISODES")
+    if _override:
+        return int(_override)
     base = env_name.split("-")[0]
     if base in ["CartPole", "FrozenLake"]:
         return 150
@@ -126,8 +163,12 @@ def resolve_llm_path(path, env_base, size_key="7B"):
     return candidates2[0] if candidates2 else None
 
 
-def load_qwen_curves(env_name, n_episodes, sft=False, long_cot=False):
-    """Load Qwen 7B and 32 B constant curves (mean reward per episode)."""
+def load_qwen_curves(env_name, n_episodes, n_pretrain_eps=10, sft=False, long_cot=False):
+    """Load Qwen 7B and 32 B constant curves (mean reward per episode).
+
+    The warm-start constant is the mean of EXACTLY the first n_pretrain_eps episodes
+    (matching the τ warm-start window), not a wider window.
+    """
     try:
         from utils import get_llm_data_paths
     except Exception:
@@ -142,7 +183,8 @@ def load_qwen_curves(env_name, n_episodes, sft=False, long_cot=False):
         try:
             with open(path_7b, "rb") as f:
                 ds = pickle.load(f)
-            rewards = [ds.episodes[i].compute_return() for i in range(min(30, len(ds.episodes)))]
+            n_load = min(n_pretrain_eps, len(ds.episodes))
+            rewards = [ds.episodes[i].compute_return() for i in range(n_load)]
             Qwen_7B = np.ones(n_episodes) * np.mean(rewards)
         except Exception as e:
             print(f"  Warning: could not load Qwen 7B for {env_base}: {e}", file=sys.stderr)
@@ -150,7 +192,8 @@ def load_qwen_curves(env_name, n_episodes, sft=False, long_cot=False):
         try:
             with open(path_32b, "rb") as f:
                 ds = pickle.load(f)
-            rewards = [ds.episodes[i].compute_return() for i in range(min(30, len(ds.episodes)))]
+            n_load = min(n_pretrain_eps, len(ds.episodes))
+            rewards = [ds.episodes[i].compute_return() for i in range(n_load)]
             Qwen_32B = np.ones(n_episodes) * np.mean(rewards)
         except Exception as e:
             print(f"  Warning: could not load Qwen 32B for {env_base}: {e}", file=sys.stderr)
@@ -201,7 +244,7 @@ def extract_cumulative_rewards_for_env(env_name, model_type, n_exp=5, max_episod
         "n_exp": n_exp,
         "n_episodes": n_episodes,
         "max_episode_len": max_episode_len,
-        "norm_const_dict": {**DEFAULT_NORM_CONST_DICT},
+        "norm_const_dict": load_norm_constants(),
         "model": model_type,
     }
     Qwen_7B, Qwen_32B = load_qwen_curves(env_name, n_episodes)

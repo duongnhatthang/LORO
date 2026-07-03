@@ -1,0 +1,22 @@
+[2m2026-07-03 09:13.56[0m [[32m[1minfo     [0m] [1mRegister Shimmy environments. [0m
+Environment      LLM-pretrainOnline RL   Qwen 7B     Qwen 32B    Random      Mix w/o pretrainPretrain w/ Online RL dataPretrain w/ random policy data
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+CartPole         N/A         N/A         N/A         N/A         N/A         N/A             N/A                       N/A                           
+CliffWalking     N/A         N/A         N/A         N/A         N/A         N/A             N/A                       N/A                           
+FrozenLake       N/A         N/A         N/A         N/A         N/A         N/A             N/A                       N/A                           
+MountainCar      N/A         N/A         N/A         N/A         N/A         N/A             N/A                       N/A                           
+Pendulum         N/A         N/A         N/A         N/A         N/A         N/A             N/A                       N/A                           
+RepresentedPong  N/A         N/A         N/A         N/A         N/A         N/A             N/A                       N/A                           
+Average          N/A         N/A         N/A         N/A         N/A         N/A             N/A                       N/A                           
+
+--- Markdown table ---
+
+| Environment | LLM-pretrain | Online RL | Qwen 7B | Qwen 32B | Random | Mix w/o pretrain | Pretrain w/ Online RL data | Pretrain w/ random policy data |
+|---|---|---|---|---|---|---|---|---|
+| CartPole | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| CliffWalking | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| FrozenLake | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| MountainCar | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Pendulum | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| RepresentedPong | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Average | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
