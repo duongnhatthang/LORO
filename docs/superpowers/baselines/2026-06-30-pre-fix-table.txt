@@ -1,0 +1,48 @@
+[2m2026-06-30 23:24.01[0m [[32m[1minfo     [0m] [1mRegister Shimmy environments. [0m
+Environment is CliffWalking or FrozenLake. Extracting dataset for Transfer Coefficient calculation ...
+Environment is CliffWalking or FrozenLake. Extracting dataset for Transfer Coefficient calculation ...
+Environment      LLM-pretrainOnline RL   Qwen 7B     Qwen 32B    Random      Mix w/o pretrainPretrain w/ Online RL dataPretrain w/ random policy data
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+CartPole         0.92        0.88        0.05        0.17        -0.01       0.92            -0.06                     -0.06                         
+CliffWalking     0.82        0.92        0.76        -2.66       0.03        0.82            0.89                      0.88                          
+FrozenLake       0.68        0.73        0.00        0.07        -0.03       0.69            -0.02                     0.00                          
+MountainCar      0.52        0.00        0.00        0.26        0.00        0.61            0.00                      0.00                          
+Pendulum         0.85        0.90        -0.41       -0.21       -0.02       0.81            0.68                      0.77                          
+RepresentedPong  -0.16       -0.22       0.00        0.05        0.03        -0.11           -0.23                     -0.23                         
+Average          0.60        0.54        0.07        -0.38       0.00        0.62            0.21                      0.23                          
+
+--- Markdown table ---
+
+| Environment | LLM-pretrain | Online RL | Qwen 7B | Qwen 32B | Random | Mix w/o pretrain | Pretrain w/ Online RL data | Pretrain w/ random policy data |
+|---|---|---|---|---|---|---|---|---|
+| CartPole | 0.92 | 0.88 | 0.05 | 0.17 | -0.01 | 0.92 | -0.06 | -0.06 |
+| CliffWalking | 0.82 | 0.92 | 0.76 | -2.66 | 0.03 | 0.82 | 0.89 | 0.88 |
+| FrozenLake | 0.68 | 0.73 | 0.00 | 0.07 | -0.03 | 0.69 | -0.02 | 0.00 |
+| MountainCar | 0.52 | 0.00 | 0.00 | 0.26 | 0.00 | 0.61 | 0.00 | 0.00 |
+| Pendulum | 0.85 | 0.90 | -0.41 | -0.21 | -0.02 | 0.81 | 0.68 | 0.77 |
+| RepresentedPong | -0.16 | -0.22 | 0.00 | 0.05 | 0.03 | -0.11 | -0.23 | -0.23 |
+| Average | 0.60 | 0.54 | 0.07 | -0.38 | 0.00 | 0.62 | 0.21 | 0.23 |
+
+# STDERR
+/opt/miniconda3/envs/llamagym/lib/python3.9/site-packages/gymnasium/envs/registration.py:513: DeprecationWarning: [33mWARN: The environment CartPole-v0 is out of date. You should consider upgrading to version `v1`.[0m
+  logger.deprecation(
+A.L.E: Arcade Learning Environment (version 0.8.1+53f58b7)
+[Powered by Stella]
+/opt/miniconda3/envs/llamagym/lib/python3.9/site-packages/gymnasium/core.py:311: UserWarning: [33mWARN: env.labels to get variables from other wrappers is deprecated and will be removed in v1.0, to get this variable you can do `env.unwrapped.labels` for environment variables or `env.get_wrapper_attr('labels')` that will search the reminding wrappers.[0m
+  logger.warn(
+/opt/miniconda3/envs/llamagym/lib/python3.9/site-packages/gymnasium/core.py:311: UserWarning: [33mWARN: env.spec to get variables from other wrappers is deprecated and will be removed in v1.0, to get this variable you can do `env.unwrapped.spec` for environment variables or `env.get_wrapper_attr('spec')` that will search the reminding wrappers.[0m
+  logger.warn(
+/opt/miniconda3/envs/llamagym/lib/python3.9/site-packages/gymnasium/utils/passive_env_checker.py:175: UserWarning: [33mWARN: The default seed argument in `Env.reset` should be `None`, otherwise the environment will by default always be deterministic. Actual default: seed=0[0m
+  logger.warn(
+/opt/miniconda3/envs/llamagym/lib/python3.9/site-packages/gymnasium/utils/passive_env_checker.py:181: DeprecationWarning: [33mWARN: Current gymnasium version requires that `Env.reset` can be passed `options` to allow the environment initialisation to be passed additional information.[0m
+  logger.deprecation(
+/opt/miniconda3/envs/llamagym/lib/python3.9/site-packages/gymnasium/utils/passive_env_checker.py:135: UserWarning: [33mWARN: The obs returned by the `reset()` method was expecting numpy array dtype to be float32, actual type: int64[0m
+  logger.warn(
+/opt/miniconda3/envs/llamagym/lib/python3.9/site-packages/gymnasium/utils/passive_env_checker.py:159: UserWarning: [33mWARN: The obs returned by the `reset()` method is not within the observation space.[0m
+  logger.warn(f"{pre} is not within the observation space.")
+/opt/miniconda3/envs/llamagym/lib/python3.9/site-packages/gymnasium/utils/passive_env_checker.py:213: DeprecationWarning: [33mWARN: Core environment is written in old step API which returns one bool instead of two. It is recommended to rewrite the environment with new step API. [0m
+  logger.deprecation(
+/opt/miniconda3/envs/llamagym/lib/python3.9/site-packages/gymnasium/utils/passive_env_checker.py:135: UserWarning: [33mWARN: The obs returned by the `step()` method was expecting numpy array dtype to be float32, actual type: int64[0m
+  logger.warn(
+/opt/miniconda3/envs/llamagym/lib/python3.9/site-packages/gymnasium/utils/passive_env_checker.py:159: UserWarning: [33mWARN: The obs returned by the `step()` method is not within the observation space.[0m
+  logger.warn(f"{pre} is not within the observation space.")

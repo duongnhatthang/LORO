@@ -5,9 +5,11 @@ from env.atari.represented_atari_game import GymCompatWrapper2
 import pickle
 from datetime import datetime
 from tqdm import trange
-from d3rlpy.metrics import EnvironmentEvaluator
 import os
 import json
+
+EVAL_N_TRIALS = int(os.environ.get("EVAL_N_TRIALS", "20"))  # per-checkpoint eval episodes; env-overridable for cheap first-pass runs (was 1 for all envs except CliffWalking)
+EVAL_INTERVAL = int(os.environ.get("EVAL_INTERVAL", "1"))  # eval every K rollouts (1 = every rollout, original). Online learning still runs every rollout; the reward curve is forward-filled between eval points, so its length is unchanged.
 
 def get_llm_data_paths(env, sft=False, long_cot=False):
     env_name = env.split("-")[0]
@@ -20,6 +22,11 @@ def get_llm_data_paths(env, sft=False, long_cot=False):
     if env_name == "FrozenLake" and long_cot:
         path_7b = f"data/{env_name}_DeepSeek-R1-Distill-Qwen-7B_Neps_30.pkl"  # FrozenLake DS 7b
         path_32b = f"data/{env_name}_DeepSeek-R1-Distill-Qwen-14B_Neps_30.pkl"  # FrozenLake DS 14b
+    # Return None for a model whose data file is absent, honoring the
+    # `if path is not None` skip-guards in online_main.py (so a run with only
+    # one model's data collected skips the other instead of crashing on load).
+    path_7b = path_7b if (path_7b and os.path.exists(path_7b)) else None
+    path_32b = path_32b if (path_32b and os.path.exists(path_32b)) else None
     return path_7b, path_32b
 
 
@@ -84,29 +91,25 @@ def evaluate_qlearning_with_environment(
         episode_reward = 0.0
         count = 0
         while True:
-            # take action
+            if isinstance(observation, np.ndarray):
+                obs_input = np.expand_dims(observation, axis=0)
+            elif isinstance(observation, (tuple, list)):
+                obs_input = [np.expand_dims(o, axis=0) for o in observation]
+            else:
+                raise ValueError(f"Unsupported observation type: {type(observation)}")
             if np.random.random() < epsilon:
                 action = env.action_space.sample()
             else:
-                if isinstance(observation, np.ndarray):
-                    observation = np.expand_dims(observation, axis=0)
-                elif isinstance(observation, (tuple, list)):
-                    observation = [np.expand_dims(o, axis=0) for o in observation]
-                else:
-                    raise ValueError(
-                        f"Unsupported observation type: {type(observation)}"
-                    )
-                action = algo.predict(observation)[0]
+                action = algo.predict(obs_input)[0]
+            observations.append(observation)   # s_t: state the action was taken in
+            actions.append(action)             # a_t
             observation, reward, done, truncated, _ = env.step(action)
             episode_reward += float(reward)
             count += 1
-            observations.append(observation)
-            actions.append(action)
-            rewards.append(reward)
+            rewards.append(reward)             # r_t
             if count >= max_episode_len:
                 done = True
             terminals.append(int(done or truncated))
-
             if done or truncated:
                 break
         episode_rewards.append(episode_reward)
@@ -164,6 +167,8 @@ def create_d3rlpy_model(env_name, batch_size, learning_rate, gamma, target_updat
             model = d3rlpy.algos.SACConfig(
                 batch_size=batch_size,
                 gamma=gamma,
+                actor_learning_rate=learning_rate,
+                critic_learning_rate=learning_rate,
             ).create(device=gpu)
         else:  # Discrete action space
             model = d3rlpy.algos.DoubleDQNConfig(
@@ -293,8 +298,8 @@ def rollout_and_eval(max_episode_len, env_name, explorer, algorithm, buffer, n_r
     
     # Check if this is a random policy (which doesn't need training)
     is_random_policy = isinstance(algorithm, (d3rlpy.algos.RandomPolicy, d3rlpy.algos.DiscreteRandomPolicy))
-    
-    for _ in trange(n_rollouts):
+    _last_r = None
+    for _k in trange(n_rollouts):
         if not is_random_policy:
             # Only call fit_online for trainable algorithms
             algorithm.fit_online(
@@ -353,15 +358,13 @@ def rollout_and_eval(max_episode_len, env_name, explorer, algorithm, buffer, n_r
                 if len(episode) > 0 and hasattr(episode, "rewards"):
                     buffer.append_episode(episode)
         
-        if env_name == "CliffWalking-v0":
+        if _k % EVAL_INTERVAL == 0 or _k == n_rollouts - 1:
             r, _ = evaluate_qlearning_with_environment(
-                algorithm, eval_env, max_episode_len
+                algorithm, eval_env, max_episode_len, n_trials=EVAL_N_TRIALS
             )
-        else:
-            env_evaluator = EnvironmentEvaluator(env, n_trials=1)
-            r = env_evaluator(algorithm, dataset=None)
-        rewards.append(r)
-    
+            _last_r = r
+        rewards.append(_last_r)  # forward-fill between eval points (EVAL_INTERVAL)
+
     # Evaluate the final policy on the evaluation environment
     _, dataset = evaluate_qlearning_with_environment(
         algorithm, eval_env, max_episode_len

@@ -52,6 +52,12 @@ class Agent(ABC):
         self.device = device
         self.generate_config_dict = generate_config_dict
         self.is_sft = is_sft
+        # Inference backend. "local" -> HF model.generate (default, unchanged).
+        # "api" -> route generation through an OpenAI-compatible server (e.g.
+        # a local vLLM server) via self.llm_client. Set by llm_main after
+        # construction so existing callers keep the local path.
+        self.backend = "local"
+        self.llm_client = None
         
         if is_sft:
             print("Creating reference model for SFT")
@@ -86,6 +92,20 @@ class Agent(ABC):
         pass
 
     def llm(self, messages: List[Dict[str, str]]) -> str:
+        if self.backend == "api":
+            cfg = {
+                key.split("/")[-1]: value
+                for key, value in self.generate_config_dict.items()
+            }
+            response = self.llm_client.chat(
+                messages,
+                temperature=cfg.get("temperature", 0.9),
+                top_p=cfg.get("top_p", 0.6),
+                max_new_tokens=cfg.get("max_new_tokens", 256),
+                seed=cfg.get("seed", 0),
+            )
+            return response.strip()
+
         prompt = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
@@ -108,7 +128,10 @@ class Agent(ABC):
         outputs = self.tokenizer.batch_decode(
             generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
-        response = outputs[0].split("[/INST]")[-1].strip()
+        from env.action_parsing import extract_generated_text
+        prompt_text = self.tokenizer.decode(inputs["input_ids"][0], skip_special_tokens=True) \
+            if hasattr(self, "tokenizer") else ""
+        response = extract_generated_text(outputs[0], prompt_text).strip()
 
         return response
 

@@ -19,6 +19,7 @@ from env.translation_agent import SpaceInvadersAgent, PongAgent
 from env import classic_control, toy_text, translation_agent
 from env.atari.represented_atari_game import GymCompatWrapper
 from env.atari import register_environments
+from env.action_parsing import reset_parse_failures, PARSE_FAILURES_GET
 
 
 def get_agent(model, tokenizer, device, hyperparams):
@@ -206,18 +207,20 @@ def get_agent(model, tokenizer, device, hyperparams):
         ), f"Environment {hyperparams['env']} is not supported. Please provide a valid environment."
     return agent
 
-def llm_write_timing_log(rollout_time, hyperparams, timestamp):
+def llm_write_timing_log(rollout_time, hyperparams, timestamp, parse_stats=None):
     """
     Write timing information and hyperparameters to a log file with timestamp.
-    
+
     Args:
         rollout_time (float): Time taken for rollout in seconds
         hyperparams (dict): Dictionary containing hyperparameters
         timestamp (str): Timestamp string for unique file naming
+        parse_stats (dict, optional): Action-parsing diagnostics
+            {n_steps, n_parse_failures, parse_failure_rate}
     """
     # Create logs directory if it doesn't exist
     os.makedirs("logs", exist_ok=True)
-    
+
     # Create log data
     log_data = {
         "timestamp": timestamp,
@@ -226,47 +229,71 @@ def llm_write_timing_log(rollout_time, hyperparams, timestamp):
         "rollout_time_hours": rollout_time / 3600.0,
         "hyperparameters": hyperparams
     }
-    
+    if parse_stats is not None:
+        log_data["parse_stats"] = parse_stats
+
     # Create unique log filename with timestamp
     log_filename = f"logs/llm_timing_log_{timestamp}.json"
-    
+
     # Write to log file
     with open(log_filename, "w") as f:
         json.dump(log_data, f, indent=2)
-    
+
     print(f"Timing log written to: {log_filename}")
     print(f"Rollout completed in {rollout_time:.2f} seconds ({rollout_time/60:.2f} minutes)")
+    if parse_stats is not None:
+        print(
+            f"Action parsing: {parse_stats['n_parse_failures']}/{parse_stats['n_steps']} "
+            f"steps fell back to a random action "
+            f"({parse_stats['parse_failure_rate'] * 100:.2f}%)"
+        )
+
+def collect_episode(env, agent, env_name, max_episode_len, eps):
+    """Roll out one episode; return aligned (observations, actions, rewards, terminals).
+
+    observations[k] is the state where actions[k] was chosen (pre-step), rewards[k] the
+    resulting reward, terminals[k] the done flag after the step. s_0 is included.
+    """
+    observations, actions, rewards, terminals = [], [], [], []
+    observation, _info = env.reset()
+    done = False
+    n_step = 0
+    while not done:
+        if bool(np.random.binomial(n=1, p=eps)):
+            action = env.action_space.sample()
+        else:
+            action = agent.act(observation)
+        observations.append(observation)   # s_t (pre-step)
+        actions.append(action)             # a_t
+        next_observation, reward, done, _info = env.step(action)
+        if "Cliff" in env_name or "Frozen" in env_name:
+            agent.add_env_hist(next_observation, reward, action)
+        agent.assign_reward(reward)
+        rewards.append(reward)             # r_t
+        n_step += 1
+        if n_step >= max_episode_len:
+            done = True
+        terminals.append(int(done))
+        observation = next_observation
+    return observations, actions, rewards, terminals
+
 
 def rollout(agent, env, hyperparams):
     d3rlpy.seed(hyperparams["seed"])
     d3rlpy.envs.seed_env(env, hyperparams["seed"])
     np.random.seed(hyperparams["seed"])
+    reset_parse_failures()
 
     observations, actions, rewards, terminals = [], [], [], []
     counter = 0
     for episode in trange(hyperparams["n_episodes"]):
-        observation, info = env.reset()
-        done = False
-        n_step = 0
-        while not done:
-            rand = bool(np.random.binomial(n=1, p=hyperparams["eps"]))
-            if rand:
-                action = env.action_space.sample()
-            else:
-                action = agent.act(observation)
-            # wandb.log({"action": action})
-            observation, reward, done, info = env.step(action)
-            if "Cliff" in hyperparams["env"] or "Frozen" in hyperparams["env"]:
-                agent.add_env_hist(observation, reward, action)
-            agent.assign_reward(reward)
-            observations.append(observation)
-            actions.append(action)
-            rewards.append(reward)
-            n_step += 1
-            if n_step >= hyperparams["max_episode_len"]:
-                done = True
-            terminals.append(int(done))
-            print(n_step, observation, action, reward)
+        ep_obs, ep_act, ep_rew, ep_term = collect_episode(
+            env, agent, hyperparams["env"], hyperparams["max_episode_len"], hyperparams["eps"]
+        )
+        observations += ep_obs
+        actions += ep_act
+        rewards += ep_rew
+        terminals += ep_term
         # episode_stats = {
         #     "episode": episode,
         #     "sum_return": sum(agent.current_episode_rewards),
@@ -288,7 +315,14 @@ def rollout(agent, env, hyperparams):
         rewards=np.array(rewards),
         terminals=np.array(terminals),
     )
-    return dataset
+    n_steps = len(actions)
+    n_parse_failures = PARSE_FAILURES_GET()
+    parse_stats = {
+        "n_steps": n_steps,
+        "n_parse_failures": n_parse_failures,
+        "parse_failure_rate": (n_parse_failures / n_steps) if n_steps else 0.0,
+    }
+    return dataset, parse_stats
 
 if __name__ == "__main__":
     # Parse command line arguments
@@ -301,6 +335,10 @@ if __name__ == "__main__":
                         help="Number of episodes to run")
     parser.add_argument("--max_episode_len", type=int, default=200,
                         help="Maximum episode length")
+    parser.add_argument("--max_new_tokens", type=int, default=2000,
+                        help="Max new tokens the LLM generates per action. "
+                             "2000 suits reasoning models; drop to ~256 for "
+                             "instruct models to cut collection time ~8x.")
     parser.add_argument("--SFT", action="store_true", default=False,
                         help="Whether to use supervised fine-tuning")
     parser.add_argument("--seed", type=int, default=42069,
@@ -313,7 +351,9 @@ if __name__ == "__main__":
                         help="Whether to load model in 8-bit (true/false) - DEPRECATED, use --quantization instead")
     parser.add_argument("--quantization", type=str, default="none", choices=["none", "4bit", "8bit"],
                         help="Quantization method: none, 4bit, or 8bit")
-    
+    parser.add_argument("--backend", type=str, default="local", choices=["local", "api"],
+                        help="LLM backend: local transformers or OpenAI-compatible API")
+
     args = parser.parse_args()
     
     hyperparams = {
@@ -338,7 +378,7 @@ if __name__ == "__main__":
         "batch_size": args.batch_size,
         "seed": args.seed,
         "n_episodes": args.n_episodes,
-        "generate/max_new_tokens": 2000,
+        "generate/max_new_tokens": args.max_new_tokens,
         "generate/do_sample": True,
         "generate/top_p": 0.6,
         "generate/top_k": 0,
@@ -346,6 +386,7 @@ if __name__ == "__main__":
         "max_episode_len": args.max_episode_len,
         "eps": args.eps,
         "SFT": args.SFT,
+        "backend": args.backend,
     }
     # wandb_run = wandb.init(project=os.environ.get("WANDB_PROJECT"), config=hyperparams)
     device = "cuda"
@@ -382,48 +423,64 @@ if __name__ == "__main__":
     else:
         print("No quantization configured")
     
-    # Try loading the model with the configured quantization
-    try:
-        model = AutoModelForCausalLMWithValueHead.from_pretrained(
-            pretrained_model_name_or_path=hyperparams["model_name"],
-            peft_config=lora_config,
-            quantization_config=quantization_config,
-            device_map="auto",  # This helps with device mapping
-            token=HF_TOKEN,
+    if hyperparams["backend"] == "api":
+        # Generation runs on an external OpenAI-compatible server (e.g. a local
+        # vLLM server), so we do NOT load the HF weights here — that's the whole
+        # point: vLLM holds the model and serves fast, batched decoding.
+        assert not hyperparams["SFT"], (
+            "SFT needs local model gradients; run SFT with --backend local."
         )
-        print(f"Successfully loaded model with quantization: {hyperparams['quantization']}")
-    except Exception as e:
-        print(f"Error loading model with quantization: {e}")
-        print("Falling back to loading without quantization...")
+        print("Backend=api: skipping local model load; generation via "
+              "OpenAI-compatible server (set LLM_API_BASE / LLM_API_KEY).")
+        model = None
+        tokenizer = None
+        agent = get_agent(model, tokenizer, device, hyperparams)
+        from llm_client import LLMClient
+        agent.backend = "api"
+        agent.llm_client = LLMClient(model=hyperparams["model_name"], backend="api")
+    else:
+        # Try loading the model with the configured quantization
         try:
             model = AutoModelForCausalLMWithValueHead.from_pretrained(
                 pretrained_model_name_or_path=hyperparams["model_name"],
                 peft_config=lora_config,
-                device_map="auto",
+                quantization_config=quantization_config,
+                device_map="auto",  # This helps with device mapping
                 token=HF_TOKEN,
-            ).to(device)
-            print("Successfully loaded model without quantization")
-        except Exception as e2:
-            print(f"Error loading model without quantization: {e2}")
-            print("Trying with manual device mapping...")
-            model = AutoModelForCausalLMWithValueHead.from_pretrained(
-                pretrained_model_name_or_path=hyperparams["model_name"],
-                peft_config=lora_config,
-                token=HF_TOKEN,
-            ).to(device)
-    
-    # Clear GPU cache and print memory info
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-        print(f"GPU memory cached: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
-    
-    tokenizer = AutoTokenizer.from_pretrained(hyperparams["model_name"], token=HF_TOKEN)
-    tokenizer.add_special_tokens({"pad_token": "<pad>"})
-    tokenizer.pad_token_id = tokenizer.eos_token_id
-    model.pretrained_model.resize_token_embeddings(len(tokenizer))
+            )
+            print(f"Successfully loaded model with quantization: {hyperparams['quantization']}")
+        except Exception as e:
+            print(f"Error loading model with quantization: {e}")
+            print("Falling back to loading without quantization...")
+            try:
+                model = AutoModelForCausalLMWithValueHead.from_pretrained(
+                    pretrained_model_name_or_path=hyperparams["model_name"],
+                    peft_config=lora_config,
+                    device_map="auto",
+                    token=HF_TOKEN,
+                ).to(device)
+                print("Successfully loaded model without quantization")
+            except Exception as e2:
+                print(f"Error loading model without quantization: {e2}")
+                print("Trying with manual device mapping...")
+                model = AutoModelForCausalLMWithValueHead.from_pretrained(
+                    pretrained_model_name_or_path=hyperparams["model_name"],
+                    peft_config=lora_config,
+                    token=HF_TOKEN,
+                ).to(device)
 
-    agent = get_agent(model, tokenizer, device, hyperparams)
+        # Clear GPU cache and print memory info
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+            print(f"GPU memory cached: {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+
+        tokenizer = AutoTokenizer.from_pretrained(hyperparams["model_name"], token=HF_TOKEN)
+        tokenizer.add_special_tokens({"pad_token": "<pad>"})
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        model.pretrained_model.resize_token_embeddings(len(tokenizer))
+
+        agent = get_agent(model, tokenizer, device, hyperparams)
     # Ensure represented Atari environments are registered before creation
     if "Represented" in hyperparams["env"]:
         register_environments()
@@ -437,12 +494,12 @@ if __name__ == "__main__":
     # Time the rollout process
     print("Starting rollout...")
     start_time = time.time()
-    dataset = rollout(agent, env, hyperparams)
+    dataset, parse_stats = rollout(agent, env, hyperparams)
     end_time = time.time()
     rollout_time = end_time - start_time
-    
+
     # Write timing log
-    llm_write_timing_log(rollout_time, hyperparams, timestamp)
+    llm_write_timing_log(rollout_time, hyperparams, timestamp, parse_stats=parse_stats)
     if hyperparams["SFT"]:
         is_SFT = "SFT"
     else:

@@ -298,107 +298,34 @@ class PongAgent(TranslationAgent):
         )
 
     def extract_action(self, response: str) -> gym.core.ActType:
-        digits = [char for char in response if char.isdigit()]
-        out = -1
-        if len(digits) == 0 or digits[-1] not in ("1", "2", "3", "4", "5", "6"):
-            if "Move left while hiting the ball" in response.lower():
-                out = 6
-            elif "Move right while hiting the ball" in response.lower():
-                out = 5
-            elif "Move LEFT" in response.lower():
-                out = 4
-            elif "Move RIGHT" in response.lower():
-                out = 3
-            elif "Hit your ball" in response.lower():
-                out = 2
-            elif "NOOP" in response.lower():
-                out = 1
-        elif digits[-1] in ("1", "2", "3", "4", "5", "6"):
-            out = int(digits[-1])
-        else:
-            print(
-                f"PongAgent.extract_action({response}): cannot extract action. Return 1: Do nothing (NOOP)"
-            )
-            out = 1
-        if out not in range(1, 7, 1):
-            print(
-                f"The extracted action is {out}, which is out of bounds. Return 1: Do nothing (NOOP). Response: {response}."
-            )
-            out = 1
-        return out - 1
+        from env.action_parsing import extract_choice_index
+        out, _fb = extract_choice_index(response, valid_1based=[1, 2, 3, 4, 5, 6],
+                                        keyword_map={"noop": 1, "fire": 2, "right": 3, "left": 4})
+        return out - 1  # LLM biased toward 0; elicit 1-based then shift to 0-based
 
 
 class CartPoleAgent(TranslationAgent):
     def extract_action(self, response: str) -> gym.core.ActType:
-        digits = [char for char in response if char.isdigit()]
-        out = -1
-        if len(digits) == 0 or digits[-1] not in ("1", "2"):
-            if "Left" in response.lower():
-                out = 1
-            elif "Right" in response.lower():
-                out = 2
-        elif digits[-1] in ("1", "2"):
-            out = int(digits[-1])
-        else:
-            print(
-                f"CartPoleAgent.extract_action({response}): cannot extract action. Return 1: Left"
-            )
-            out = 1
-        if out not in range(1, 3, 1):
-            print(
-                f"The extracted action is {out}, which is out of bounds. Return 1: left. Response: {response}."
-            )
-            out = 1
-        return (
-            out - 1
-        )  # Choose index start from 1 since LLM bias toward action 0. Shift to 0-based index for gym compatibility.
+        from env.action_parsing import extract_choice_index
+        out, _fb = extract_choice_index(response, valid_1based=[1, 2],
+                                        keyword_map={"left": 1, "right": 2})
+        return out - 1  # LLM biased toward 0; elicit 1-based then shift to 0-based
 
 
 class AcrobotAgent(TranslationAgent):
     def extract_action(self, response: str) -> gym.core.ActType:
-        digits = [char for char in response if char.isdigit()]
-        out = -1
-        if digits[-1] in ("1", "2", "3"):
-            out = int(digits[-1])
-        else:
-            print(
-                f"AcrobotAgent.extract_action({response}): cannot extract action. Return 2: apply 0 torque"
-            )
-            out = 2
-        if out not in range(1, 4, 1):
-            print(
-                f"The extracted action is {out}, which is out of bounds. Return 2: apply 0 torque. Response: {response}."
-            )
-            out = 2
-        return (
-            out - 1
-        )  # Choose index start from 1 since LLM bias toward action 0. Shift to 0-based index for gym compatibility.
+        from env.action_parsing import extract_choice_index
+        out, _fb = extract_choice_index(response, valid_1based=[1, 2, 3],
+                                        keyword_map={"left": 1, "none": 2, "right": 3})
+        return out - 1  # LLM biased toward 0; elicit 1-based then shift to 0-based
 
 
 class MountainCarAgent(TranslationAgent):
     def extract_action(self, response: str) -> gym.core.ActType:
-        digits = [char for char in response if char.isdigit()]
-        out = -1
-        if len(digits) == 0 or digits[-1] not in ("1", "2", "3"):
-            if "Left" in response.lower():
-                out = 1
-            elif "Right" in response.lower():
-                out = 3
-        elif digits[-1] in ("1", "2", "3"):
-            out = int(digits[-1])
-        else:
-            print(
-                f"MountainCarAgent.extract_action({response}): cannot extract action. Return 2: not accelerate"
-            )
-            out = 2
-        if out not in range(1, 4, 1):
-            print(
-                f"The extracted action is {out}, which is out of bounds. Return 2: not accelerate. Response: {response}."
-            )
-            out = 2
-        return (
-            out - 1
-        )  # Choose index start from 1 since LLM bias toward action 0. Shift to 0-based index for gym compatibility.
+        from env.action_parsing import extract_choice_index
+        out, _fb = extract_choice_index(response, valid_1based=[1, 2, 3],
+                                        keyword_map={"left": 1, "not": 2, "right": 3})
+        return out - 1  # LLM biased toward 0; elicit 1-based then shift to 0-based
 
 
 class FrozenLakeAgent(TranslationAgent):
@@ -479,32 +406,10 @@ class FrozenLakeAgent(TranslationAgent):
         self.prev_action = action
 
     def extract_action(self, response: str) -> gym.core.ActType:
-        digits = [char for char in response if char.isdigit()]
-        out = -1
-        if len(digits) == 0 or digits[-1] not in ("1", "2", "3", "4"):
-            if "Up" in response.lower():
-                out = 4
-            elif "Right" in response.lower():
-                out = 3
-            elif "Down" in response.lower():
-                out = 2
-            elif "Left" in response.lower():
-                out = 1
-        elif digits[-1] in ("1", "2", "3", "4"):
-            out = int(digits[-1])
-        else:
-            print(
-                f"FrozenLakeAgent.extract_action({response}): cannot extract action. Return 1: Left"
-            )
-            out = 1
-        if out not in range(1, 5, 1):
-            print(
-                f"The extracted action is {out}, which is out of bounds. Return 1: Left. Response: {response}."
-            )
-            out = 1
-        return (
-            out - 1
-        )  # Choose index start from 1 since LLM bias toward action 0. Shift to 0-based index for gym compatibility.
+        from env.action_parsing import extract_choice_index
+        out, _fb = extract_choice_index(response, valid_1based=[1, 2, 3, 4],
+                                        keyword_map={"left": 1, "down": 2, "right": 3, "up": 4})
+        return out - 1  # LLM biased toward 0; elicit 1-based then shift to 0-based
 
 
 class CliffWalkingAgent(FrozenLakeAgent):
@@ -545,66 +450,19 @@ class CliffWalkingAgent(FrozenLakeAgent):
         self.prev_action = action
 
     def extract_action(self, response: str) -> gym.core.ActType:
-        digits = [char for char in response if char.isdigit()]
-        out = -1
-        if len(digits) == 0 or digits[-1] not in ("1", "2", "3", "4"):
-            if "Up" in response.lower():
-                out = 1
-            elif "Right" in response.lower():
-                out = 2
-            elif "Down" in response.lower():
-                out = 3
-            elif "Left" in response.lower():
-                out = 4
-        elif digits[-1] in ("1", "2", "3", "4"):
-            out = int(digits[-1])
-        else:
-            print(
-                f"CliffWalkingAgent.extract_action({response}): cannot extract action. Return 1: Up"
-            )
-            out = 1
-        if out not in range(1, 5, 1):
-            print(
-                f"The extracted action is {out}, which is out of bounds. Return 1: Up. Response: {response}."
-            )
-            out = 1
-        return (
-            out - 1
-        )  # Choose index start from 1 since LLM bias toward action 0. Shift to 0-based index for gym compatibility.
+        from env.action_parsing import extract_choice_index
+        out, _fb = extract_choice_index(response, valid_1based=[1, 2, 3, 4],
+                                        keyword_map={"up": 1, "right": 2, "down": 3, "left": 4})
+        return out - 1  # LLM biased toward 0; elicit 1-based then shift to 0-based
 
 
 class TaxiAgent(TranslationAgent):
     def extract_action(self, response: str) -> gym.core.ActType:
-        digits = [char for char in response if char.isdigit()]
-        out = -1
-        if len(digits) == 0 or digits[-1] not in ("1", "2", "3", "4", "5", "6"):
-            if "Right" in response.lower() or "East" in response.lower():
-                out = 3
-            elif "Down" in response.lower() or "South" in response.lower():
-                out = 1
-            elif "Left" in response.lower() or "West" in response.lower():
-                out = 4
-            elif "pick" in response.lower():
-                out = 5
-            elif "drop" in response.lower():
-                out = 6
-            elif "Up" in response.lower() or "North" in response.lower():
-                out = 2
-        elif digits[-1] in ("1", "2", "3", "4", "5", "6"):
-            out = int(digits[-1])
-        else:
-            print(
-                f"TaxiAgent.extract_action({response}): cannot extract action. Return 1: Down"
-            )
-            out = 1
-        if out not in range(1, 7, 1):
-            print(
-                f"The extracted action is {out}, which is out of bounds. Return 1: Down. Response: {response}."
-            )
-            out = 1
-        return (
-            out - 1
-        )  # Choose index start from 1 since LLM bias toward action 0. Shift to 0-based index for gym compatibility.
+        from env.action_parsing import extract_choice_index
+        out, _fb = extract_choice_index(response, valid_1based=[1, 2, 3, 4, 5, 6],
+                                        keyword_map={"south": 1, "north": 2, "east": 3, "west": 4,
+                                                     "pickup": 5, "dropoff": 6})
+        return out - 1  # LLM biased toward 0; elicit 1-based then shift to 0-based
 
 
 class PendulumAgent(TranslationAgent):

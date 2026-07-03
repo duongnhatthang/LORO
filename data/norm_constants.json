@@ -1,0 +1,22 @@
+{
+  "CartPole": {
+    "x_random": 21.06,
+    "x_expert": 200.0
+  },
+  "Pendulum": {
+    "x_random": -1205.8846611819208,
+    "x_expert": -150.0
+  },
+  "MountainCar": {
+    "x_random": -200.0,
+    "x_expert": -110.0
+  },
+  "FrozenLake": {
+    "x_random": 0.01,
+    "x_expert": 1.0
+  },
+  "CliffWalking": {
+    "x_random": -2069.9,
+    "x_expert": -13
+  }
+}
